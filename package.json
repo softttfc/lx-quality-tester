@@ -18,7 +18,7 @@
   },
   "build": {
     "appId": "com.lx.quality.tester",
-    "productName": "LX音源测试",
+    "productName": "LX\u97f3\u6e90\u6d4b\u8bd5",
     "directories": {
       "output": "dist"
     },
@@ -37,7 +37,7 @@
       ]
     },
     "portable": {
-      "artifactName": "LX音源测试-${version}.exe"
+      "artifactName": "LX\u97f3\u6e90\u6d4b\u8bd5-${version}.exe"
     }
   }
 }
