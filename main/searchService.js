@@ -13,35 +13,123 @@ function formatInterval(sec) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-// ============ QQ 音乐 ============
+// ============ QQ 音乐（zzcSign 签名 + 官方 Mobile 接口） ============
+const QQ_PART_1_INDEXES = [23, 14, 6, 36, 16, 40, 7, 19]
+const QQ_PART_2_INDEXES = [16, 1, 32, 12, 19, 27, 8, 5]
+const QQ_SCRAMBLE_VALUES = [
+  89, 39, 179, 150, 218, 82, 58, 252, 177, 52,
+  186, 123, 120, 64, 242, 133, 143, 161, 121, 179,
+]
+
+function qqPickHashByIdx(hash, indexes) {
+  return indexes.map((idx) => hash[idx]).join('')
+}
+
+function zzcSign(text) {
+  const hash = crypto.createHash('sha1').update(text).digest('hex')
+  const part1 = qqPickHashByIdx(hash, QQ_PART_1_INDEXES)
+  const part2 = qqPickHashByIdx(hash, QQ_PART_2_INDEXES)
+  const part3 = QQ_SCRAMBLE_VALUES.map(
+    (value, i) => value ^ parseInt(hash.slice(i * 2, i * 2 + 2), 16)
+  )
+  const b64Part = Buffer.from(part3).toString('base64').replace(/[\\/+=]/g, '')
+  return `zzc${part1}${b64Part}${part2}`.toLowerCase()
+}
+
 async function searchQQ(keyword, limit = 20) {
   try {
-    const { data } = await axios.get('https://c.y.qq.com/soso/fcgi-bin/client_search_cp', {
-      params: {
-        w: keyword,
-        format: 'json',
-        p: 1,
-        n: limit,
-        cr: 1,
-        aggr: 1,
-        lossless: 0,
-        flag_qc: 0,
+    const body = {
+      comm: {
+        ct: '11',
+        cv: '14090508',
+        v: '14090508',
+        tmeAppID: 'qqmusic',
+        phonetype: 'EBG-AN10',
+        deviceScore: '553.47',
+        devicelevel: '50',
+        newdevicelevel: '20',
+        rom: 'HuaWei/EMOTION/EmotionUI_14.2.0',
+        os_ver: '12',
+        OpenUDID: '0',
+        OpenUDID2: '0',
+        QIMEI36: '0',
+        udid: '0',
+        chid: '0',
+        aid: '0',
+        oaid: '0',
+        taid: '0',
+        tid: '0',
+        wid: '0',
+        uid: '0',
+        sid: '0',
+        modeSwitch: '6',
+        teenMode: '0',
+        ui_mode: '2',
+        nettype: '1020',
+        v4ip: '',
       },
-      headers: { ...HEADERS, Referer: 'https://y.qq.com/' },
-      timeout: 10000,
-    })
-    const list = (data && data.data && data.data.song && data.data.song.list) || []
-    return list.map((s) => ({
-      source: 'tx',
-      name: s.songname,
-      singer: (s.singer || []).map((x) => x.name).join('、'),
-      albumName: s.albumname,
-      interval: formatInterval(s.interval),
-      songmid: s.songmid,
-      songId: s.songid,
-      strMediaMid: s.strMediaMid || s.media_mid,
-      albumMid: s.albummid,
-    }))
+      req: {
+        module: 'music.search.SearchCgiService',
+        method: 'DoSearchForQQMusicMobile',
+        param: {
+          search_type: 0,
+          searchid: Math.random().toString().slice(2),
+          query: keyword,
+          page_num: 1,
+          num_per_page: limit,
+          highlight: 0,
+          nqc_flag: 0,
+          multi_zhida: 0,
+          cat: 2,
+          grp: 1,
+          sin: 0,
+          sem: 0,
+        },
+      },
+    }
+
+    const sign = zzcSign(JSON.stringify(body))
+    const { data } = await axios.post(
+      `https://u.y.qq.com/cgi-bin/musics.fcg?sign=${sign}`,
+      body,
+      {
+        headers: {
+          'User-Agent': 'QQMusic 14090508(android 12)',
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      }
+    )
+
+    if (!data || data.code !== 0 || !data.req || data.req.code !== 0) {
+      console.error(
+        '[searchQQ] 接口返回异常:',
+        data && data.code,
+        data && data.req && data.req.code
+      )
+      return []
+    }
+
+    const songs =
+      data.req.data && data.req.data.body && data.req.data.body.item_song
+    if (!Array.isArray(songs)) {
+      console.error('[searchQQ] item_song 不是数组:', typeof songs)
+      return []
+    }
+
+    return songs
+      .filter((s) => s && s.file && s.file.media_mid)
+      .map((s) => ({
+        source: 'tx',
+        name: s.title,
+        singer: (s.singer || []).map((x) => x.name).join('、'),
+        albumName: s.album ? s.album.name : '',
+        interval: formatInterval(s.interval),
+        songmid: s.mid,
+        songId: String(s.id),
+        strMediaMid: s.file.media_mid,
+        albumMid: s.album ? s.album.mid : '',
+      }))
   } catch (e) {
     console.error('[searchQQ]', e.message)
     return []
@@ -159,7 +247,7 @@ async function searchKg(keyword, limit = 20) {
   }
 }
 
-// ============ 咪咕（v3 接口 + 签名，对齐 LX Music 内置方式）============
+// ============ 咪咕（v3 接口 + 签名，对齐 LX Music） ============
 function createMgSignature(time, text) {
   const deviceId = '963B7AA0D21511ED807EE5846EC87D20'
   const signatureMd5 = '6cdc72a439cef99a3418d2a78aa28c73'
