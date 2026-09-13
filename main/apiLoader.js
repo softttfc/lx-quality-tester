@@ -12,6 +12,7 @@ function parseScriptHeader(script) {
   }
   return {
     name: ex('name'),
+    description: ex('description'),
     version: ex('version'),
     author: ex('author'),
     homepage: ex('homepage'),
@@ -27,7 +28,7 @@ function loadApiSource(scriptPath) {
   }
 
   const info = parseScriptHeader(script)
-  const { lx, handlers } = createLxSandbox(info)
+  const { lx, handlers } = createLxSandbox({ ...info, rawScript: script })
 
   const sandbox = {
     lx,
@@ -74,6 +75,17 @@ function loadApiSource(scriptPath) {
     URLSearchParams,
     TextEncoder,
     TextDecoder,
+    Uint8Array,
+    Int8Array,
+    Uint8ClampedArray,
+    Int16Array,
+    Uint16Array,
+    Int32Array,
+    Uint32Array,
+    Float32Array,
+    Float64Array,
+    ArrayBuffer,
+    DataView,
   }
   sandbox.globalThis = sandbox
   sandbox.global = sandbox
@@ -85,10 +97,20 @@ function loadApiSource(scriptPath) {
     return { error: `执行失败: ${err.message}`, info }
   }
 
-  if (!handlers.inited) return { error: '未触发 inited 事件', info }
-  if (!handlers.inited.status) return { error: handlers.inited.message || '初始化失败', info }
+  // ✅ 关键修正：检查 sources 是否非空，不检查 status
+  if (!handlers.inited) {
+    return { error: '未触发 inited 事件（可能音源内部抛异常）', info }
+  }
+  const initData = handlers.inited
+  if (!initData.sources || typeof initData.sources !== 'object') {
+    return { error: 'inited 事件未声明 sources', info }
+  }
+  const sourceCount = Object.keys(initData.sources).length
+  if (sourceCount === 0) {
+    return { error: 'inited 事件声明的 sources 为空（可能音源只声明了不支持的平台）', info }
+  }
 
-  return { lx, handlers, info, initData: handlers.inited }
+  return { lx, handlers, info, initData }
 }
 
 module.exports = { loadApiSource, parseScriptHeader }
