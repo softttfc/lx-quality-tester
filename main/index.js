@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { testApiSource } = require('./tester')
 const { searchAllPlatforms } = require('./searchService')
+const { analyzeSources, mergeSources } = require('./merger')
 
 let mainWindow = null
 
@@ -18,6 +19,12 @@ function createWindow() {
   })
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   mainWindow.setMenuBarVisibility(false)
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') {
+      mainWindow.webContents.toggleDevTools()
+    }
+  })
 }
 
 app.whenReady().then(createWindow)
@@ -84,4 +91,32 @@ ipcMain.handle('save-report', async (event, content) => {
     return { ok: true, path: r.filePath }
   }
   return { ok: false }
+})
+
+// ⭐ 分析音源
+ipcMain.handle('analyze-sources', async (event, files) => {
+  try {
+    return await analyzeSources(files)
+  } catch (err) {
+    return { error: err.message || String(err) }
+  }
+})
+
+// ⭐ 生成合并音源
+ipcMain.handle('merge-sources', async (event, { files, selection }) => {
+  try {
+    const code = mergeSources(files, selection)
+    const r = await dialog.showSaveDialog({
+      title: '保存合并音源',
+      defaultPath: `merged-source-${Date.now()}.js`,
+      filters: [{ name: 'JavaScript', extensions: ['js'] }],
+    })
+    if (r.filePath) {
+      fs.writeFileSync(r.filePath, code, 'utf8')
+      return { ok: true, path: r.filePath }
+    }
+    return { ok: false }
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
 })
