@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ⭐ 从 tag 提取版本号并写入 package.json
+      # ⭐ 用 Node.js 改写 package.json（保留中文，不加 BOM）
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
@@ -31,11 +31,11 @@ jobs:
           $version = $tag -replace '^v', ''
           Write-Host "Tag: $tag"
           Write-Host "New version: $version"
-          $package = Get-Content package.json -Raw | ConvertFrom-Json
-          $package.version = $version
-          $package | ConvertTo-Json -Depth 100 | Set-Content package.json -Encoding UTF8
+          node -e "const fs=require('fs');const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));pkg.version='$version';fs.writeFileSync('package.json',JSON.stringify(pkg,null,2),'utf8');"
           Write-Host "--- package.json version ---"
           Get-Content package.json | Select-String '"version"'
+          Write-Host "--- artifactName ---"
+          Get-Content package.json | Select-String 'artifactName'
 
       - name: Build EXE
         run: npm run build
