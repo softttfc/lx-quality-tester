@@ -1,4 +1,5 @@
 const axios = require('axios')
+const crypto = require('crypto')
 
 const HEADERS = {
   'User-Agent':
@@ -12,10 +13,20 @@ function formatInterval(sec) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+// ============ QQ 音乐 ============
 async function searchQQ(keyword, limit = 20) {
   try {
     const { data } = await axios.get('https://c.y.qq.com/soso/fcgi-bin/client_search_cp', {
-      params: { w: keyword, format: 'json', p: 1, n: limit, cr: 1, aggr: 1, lossless: 0, flag_qc: 0 },
+      params: {
+        w: keyword,
+        format: 'json',
+        p: 1,
+        n: limit,
+        cr: 1,
+        aggr: 1,
+        lossless: 0,
+        flag_qc: 0,
+      },
       headers: { ...HEADERS, Referer: 'https://y.qq.com/' },
       timeout: 10000,
     })
@@ -37,6 +48,7 @@ async function searchQQ(keyword, limit = 20) {
   }
 }
 
+// ============ 网易云 ============
 async function searchWy(keyword, limit = 20) {
   try {
     const { data } = await axios.post(
@@ -68,6 +80,7 @@ async function searchWy(keyword, limit = 20) {
   }
 }
 
+// ============ 酷我 ============
 async function searchKw(keyword, limit = 20) {
   try {
     const { data } = await axios.get('http://search.kuwo.cn/r.s', {
@@ -87,7 +100,11 @@ async function searchKw(keyword, limit = 20) {
     let body = data
     if (typeof body === 'string') {
       body = body.replace(/'/g, '"')
-      try { body = JSON.parse(body) } catch (e) { return [] }
+      try {
+        body = JSON.parse(body)
+      } catch (e) {
+        return []
+      }
     }
     const list = body.abslist || body.list || []
     return list
@@ -98,9 +115,9 @@ async function searchKw(keyword, limit = 20) {
         singer: s.ARTIST || s.ARTISTNAME,
         albumName: s.ALBUM || '',
         interval: s.DURATION || '00:00',
-        songmid: s.MUSICRID.replace('MUSIC_', ''),
-        id: s.MUSICRID.replace('MUSIC_', ''),
-        rid: s.MUSICRID.replace('MUSIC_', ''),
+        songmid: String(s.MUSICRID).replace('MUSIC_', ''),
+        id: String(s.MUSICRID).replace('MUSIC_', ''),
+        rid: String(s.MUSICRID).replace('MUSIC_', ''),
       }))
   } catch (e) {
     console.error('[searchKw]', e.message)
@@ -108,6 +125,7 @@ async function searchKw(keyword, limit = 20) {
   }
 }
 
+// ============ 酷狗 ============
 async function searchKg(keyword, limit = 20) {
   try {
     const { data } = await axios.get('https://songsearch.kugou.com/song_search_v2', {
@@ -141,30 +159,95 @@ async function searchKg(keyword, limit = 20) {
   }
 }
 
+// ============ 咪咕（v3 接口 + 签名，对齐 LX Music 内置方式）============
+function createMgSignature(time, text) {
+  const deviceId = '963B7AA0D21511ED807EE5846EC87D20'
+  const signatureMd5 = '6cdc72a439cef99a3418d2a78aa28c73'
+  const prefix = 'yyapp2d16148780a1dcc7408e06336b98cfd50'
+  const signStr = `${text}${signatureMd5}${prefix}${deviceId}${time}`
+  const sign = crypto.createHash('md5').update(signStr).digest('hex')
+  return { sign, deviceId }
+}
+
 async function searchMg(keyword, limit = 20) {
   try {
-    const { data } = await axios.get('https://m.music.migu.cn/migu/remoting/scr_search_tag', {
-      params: { keyword, type: 2, rows: limit, pgc: 1 },
-      headers: { ...HEADERS, Referer: 'https://m.music.migu.cn/' },
+    const time = Date.now().toString()
+    const { sign, deviceId } = createMgSignature(time, keyword)
+    const searchSwitch = encodeURIComponent(
+      JSON.stringify({
+        song: 1,
+        album: 0,
+        singer: 0,
+        tagSong: 1,
+        mvSong: 0,
+        bestShow: 1,
+        songlist: 0,
+        lyricSong: 0,
+      })
+    )
+    const url =
+      `https://jadeite.migu.cn/music_search/v3/search/searchAll` +
+      `?isCorrect=0&isCopyright=1&searchSwitch=${searchSwitch}` +
+      `&pageSize=${limit}&text=${encodeURIComponent(keyword)}` +
+      `&pageNo=1&sort=0&sid=USS`
+
+    const { data } = await axios.get(url, {
+      headers: {
+        uiVersion: 'A_music_3.6.1',
+        deviceId,
+        timestamp: time,
+        sign,
+        channel: '0146921',
+        'User-Agent':
+          'Mozilla/5.0 (Linux; U; Android 11.0.0; zh-cn; MI 11 Build/OPR1.170623.032) AppleWebKit/534.30 (KHTML, like Gecko) Version/4.0 Mobile Safari/534.30',
+      },
       timeout: 10000,
     })
-    const list = (data && data.musics) || []
-    return list.map((s) => ({
-      source: 'mg',
-      name: s.songName,
-      singer: s.singerName,
-      albumName: s.albumName || '',
-      interval: s.length ? formatInterval(Math.floor(s.length / 1000)) : '00:00',
-      songmid: s.copyrightId,
-      id: s.copyrightId,
-      copyrightId: s.copyrightId,
-    }))
+
+    if (!data || data.code !== '000000') {
+      console.error('[searchMg] 接口返回异常：', data && data.code, data && data.info)
+      return []
+    }
+
+    const resultData = data.songResultData || { resultList: [] }
+    const rawList = resultData.resultList || []
+    const list = []
+    const seen = new Set()
+
+    for (const group of rawList) {
+      const items = Array.isArray(group) ? group : [group]
+      for (const item of items) {
+        if (!item.songId || !item.copyrightId) continue
+        if (seen.has(item.copyrightId)) continue
+        seen.add(item.copyrightId)
+
+        const singers = item.singerList || []
+        const singer = Array.isArray(singers)
+          ? singers.map((x) => x.name).filter(Boolean).join('、')
+          : ''
+
+        list.push({
+          source: 'mg',
+          name: item.name || '',
+          singer,
+          albumName: item.album || '',
+          interval: formatInterval(item.duration ? Math.floor(item.duration / 1000) : 0),
+          songmid: item.songId,
+          copyrightId: item.copyrightId,
+          id: item.copyrightId,
+        })
+      }
+    }
+
+    console.log(`[searchMg] v3 接口返回 ${list.length} 条结果`)
+    return list
   } catch (e) {
-    console.error('[searchMg]', e.message)
+    console.error('[searchMg] v3 接口失败：', e.message)
     return []
   }
 }
 
+// ============ 匹配与排序工具 ============
 function normalize(str) {
   return String(str || '')
     .toLowerCase()
@@ -195,6 +278,7 @@ function pickBest(results, songName, singer) {
   return best
 }
 
+// ============ 统一入口 ============
 async function searchAllPlatforms(songName, singer) {
   const keyword = `${songName} ${singer || ''}`.trim()
   const [tx, wy, kw, kg, mg] = await Promise.all([
@@ -221,7 +305,13 @@ async function searchAllPlatforms(songName, singer) {
   return {
     matched: result,
     raw: { tx, wy, kw, kg, mg },
-    counts: { tx: tx.length, wy: wy.length, kw: kw.length, kg: kg.length, mg: mg.length },
+    counts: {
+      tx: tx.length,
+      wy: wy.length,
+      kw: kw.length,
+      kg: kg.length,
+      mg: mg.length,
+    },
   }
 }
 
