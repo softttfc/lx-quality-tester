@@ -24,13 +24,18 @@
         <input id="songName" placeholder="歌曲名（必填）">
         <input id="singer" placeholder="歌手（推荐）">
         <input id="albumName" placeholder="专辑（可选）">
-        <details>
-          <summary>各平台歌曲 ID（可选）</summary>
+        <div class="row">
+          <button id="btnSearch" class="secondary">🔍 自动搜索各平台 ID</button>
+        </div>
+        <div id="searchStatus" class="search-status"></div>
+
+        <details id="idDetails">
+          <summary>各平台歌曲 ID（自动填充/手动修改）</summary>
           <input id="songIdWy" placeholder="网易云 songId">
           <input id="songIdTx" placeholder="QQ音乐 songmid">
           <input id="songIdKw" placeholder="酷我 songmid">
           <input id="songIdKg" placeholder="酷狗 hash">
-          <input id="songIdMg" placeholder="咪咕 songmid">
+          <input id="songIdMg" placeholder="咪咕 copyrightId">
         </details>
       </div>
 
@@ -47,7 +52,7 @@
 
       <div class="section">
         <button id="btnStart" class="primary">开始测试</button>
-        <button id="btnSave" disabled>保存报告</button>
+        <button id="btnSave" disabled>💾 导出报告</button>
       </div>
     </aside>
 
