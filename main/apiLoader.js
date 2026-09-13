@@ -19,7 +19,12 @@ function parseScriptHeader(script) {
   }
 }
 
-function loadApiSource(scriptPath) {
+async function loadApiSource(scriptPath, options = {}) {
+  const {
+    initTimeout = 15000,      // 等待 inited 事件的超时（ms）
+    scriptTimeout = 30000,    // vm 执行脚本的超时（ms）
+  } = options
+
   let script
   try {
     script = fs.readFileSync(scriptPath, 'utf8')
@@ -92,14 +97,22 @@ function loadApiSource(scriptPath) {
 
   try {
     vm.createContext(sandbox)
-    vm.runInContext(script, sandbox, { timeout: 30000, filename: scriptPath })
+    vm.runInContext(script, sandbox, { timeout: scriptTimeout, filename: scriptPath })
   } catch (err) {
     return { error: `执行失败: ${err.message}`, info }
   }
 
-  // ✅ 关键修正：检查 sources 是否非空，不检查 status
+  // ⭐ 关键修正：异步等待 inited 事件（有些音源的 send(inited) 在异步回调中）
+  const startTime = Date.now()
+  while (!handlers.inited && Date.now() - startTime < initTimeout) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
   if (!handlers.inited) {
-    return { error: '未触发 inited 事件（可能音源内部抛异常）', info }
+    return {
+      error: `未触发 inited 事件（等待 ${initTimeout}ms 超时，可能音源内部抛异常）`,
+      info,
+    }
   }
   const initData = handlers.inited
   if (!initData.sources || typeof initData.sources !== 'object') {
