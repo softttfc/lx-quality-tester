@@ -22,16 +22,35 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ⭐ 用 Node.js 改写 package.json（保留中文，不加 BOM）
+      # ⭐ 从 tag 提取版本号并规范化成三段式
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
           Write-Host "Tag: $tag"
+
+          # 去掉前缀 v
+          $version = $tag -replace '^v', ''
+
+          # 按 . 分割
+          $parts = $version -split '\.'
+
+          # 补齐或截断为 3 段
+          while ($parts.Length -lt 3) {
+            $parts += '0'
+          }
+          if ($parts.Length -gt 3) {
+            $parts = $parts[0..2]
+          }
+
+          # 重新拼成三段式
+          $version = $parts -join '.'
           Write-Host "New version: $version"
+
+          # 用 Node.js 写入 package.json（保留中文，不加 BOM）
           node -e "const fs=require('fs');const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));pkg.version='$version';fs.writeFileSync('package.json',JSON.stringify(pkg,null,2),'utf8');"
+
           Write-Host "--- package.json version ---"
           Get-Content package.json | Select-String '"version"'
           Write-Host "--- artifactName ---"
