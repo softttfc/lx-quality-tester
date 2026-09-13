@@ -1,3 +1,344 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Microsoft YaHei", -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #333;
+  background: #f5f5f7;
+  overflow: hidden;
+  height: 100vh;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 340px;
+  background: #fff;
+  border-right: 1px solid #e0e0e0;
+  padding: 16px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.sidebar h1 {
+  font-size: 16px;
+  margin-bottom: 16px;
+}
+
+.section {
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.section:last-child {
+  border-bottom: none;
+}
+
+.section > label {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 8px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input:focus {
+  border-color: #007aff;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+button {
+  padding: 8px 16px;
+  border: 1px solid #ddd;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+button:hover:not(:disabled) {
+  background: #f5f5f7;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: #007aff;
+  color: #fff;
+  border-color: #007aff;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #0066d6;
+}
+
+.path {
+  font-size: 11px;
+  color: #999;
+  word-break: break-all;
+  margin-top: 6px;
+}
+
+.file-list {
+  max-height: 150px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: #666;
+  margin-top: 8px;
+  padding: 6px;
+  background: #f9f9f9;
+  border-radius: 4px;
+}
+
+.file-list .file {
+  padding: 3px 0;
+}
+
+details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #007aff;
+  margin-bottom: 8px;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.checkbox input {
+  width: auto;
+  margin: 0;
+}
+
+.inline-label {
+  font-size: 12px;
+  color: #666;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.main {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.progress {
+  background: #fff;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #666;
+}
+
+.progress-bar {
+  height: 4px;
+  background: #f0f0f0;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#progressBar {
+  height: 100%;
+  background: #007aff;
+  width: 0%;
+  transition: width 0.3s;
+}
+
+.summary {
+  background: #fff;
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.summary-item {
+  text-align: center;
+}
+
+.summary-item .num {
+  font-size: 22px;
+  font-weight: 600;
+  color: #007aff;
+}
+
+.summary-item .label {
+  font-size: 11px;
+  color: #999;
+  margin-top: 4px;
+}
+
+.results {
+  padding-bottom: 20px;
+}
+
+.empty-state {
+  text-align: center;
+  color: #bbb;
+  padding: 60px 20px;
+}
+
+.api-card {
+  background: #fff;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.api-header {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.api-header:hover {
+  background: #fafafa;
+}
+
+.api-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  flex-wrap: wrap;
+}
+
+.api-meta {
+  font-size: 11px;
+  color: #999;
+  font-weight: normal;
+}
+
+.api-body {
+  border-top: 1px solid #f0f0f0;
+  padding: 12px 16px;
+}
+
+.api-error {
+  color: #d43f3f;
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.platform {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.platform:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.platform-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.platform-name {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.platform-stats {
+  font-size: 11px;
+  color: #666;
+}
+
+.quality-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.quality-table th,
+.quality-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.quality-table th {
+  color: #999;
+  font-weight: normal;
+  font-size: 10px;
+}
+
+.status-ok {
+  color: #34c759;
+}
+
+.status-fail {
+  color: #ff3b30;
+}
+
+.url-cell {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  color: #666;
+  cursor: pointer;
+}
+
+.url-cell:hover {
+  color: #007aff;
+}
 /* 追加到 style.css 末尾 */
 
 button.secondary {
