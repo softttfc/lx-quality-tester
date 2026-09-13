@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id)
 let currentDir = null
 let availableFiles = []
 let lastReport = null
+let analyzedFiles = null
 let unsubscribe = null
 let selectedIds = { wy: null, tx: null, kw: null, kg: null, mg: null }
 
@@ -108,6 +109,8 @@ $('btnStart').addEventListener('click', async () => {
   $('results').innerHTML = ''
   $('summary').style.display = 'none'
   $('progress').style.display = 'block'
+  $('btnGenerateMerge').disabled = true
+  analyzedFiles = null
 
   unsubscribe = window.api.onTestProgress(handleProgress)
 
@@ -120,6 +123,7 @@ $('btnStart').addEventListener('click', async () => {
     })
     lastReport = result
     renderResult(result)
+    await prepareMergeData()
   } catch (err) {
     alert('测试失败：' + (err && err.message ? err.message : String(err)))
   } finally {
@@ -140,6 +144,77 @@ $('btnSave').addEventListener('click', async () => {
   const r = await window.api.saveReport(JSON.stringify(data, null, 2))
   if (r && r.ok) {
     alert('报告已保存到：\n' + r.path)
+  }
+})
+
+async function prepareMergeData() {
+  if (!availableFiles.length) return
+  $('mergeStatus').textContent = '正在分析音源...'
+  $('mergeStatus').style.color = '#007aff'
+  try {
+    analyzedFiles = await window.api.analyzeSources(availableFiles)
+    if (analyzedFiles && analyzedFiles.error) {
+      $('mergeStatus').textContent = '分析失败: ' + analyzedFiles.error
+      $('mergeStatus').style.color = '#ff3b30'
+      return
+    }
+    const ok = (analyzedFiles || []).filter((f) => !f.error).length
+    $('mergeStatus').textContent = `已分析 ${ok}/${analyzedFiles.length} 个音源，可勾选平台后生成`
+    $('mergeStatus').style.color = ok > 0 ? '#34c759' : '#ff3b30'
+    updateMergeButtonState()
+  } catch (err) {
+    $('mergeStatus').textContent = '分析失败: ' + (err.message || err)
+    $('mergeStatus').style.color = '#ff3b30'
+  }
+}
+
+function updateMergeButtonState() {
+  const anyChecked = document.querySelectorAll('.merge-checkbox:checked').length > 0
+  $('btnGenerateMerge').disabled = !analyzedFiles || !anyChecked
+}
+
+$('btnGenerateMerge').addEventListener('click', async () => {
+  if (!analyzedFiles) return alert('请先完成测试')
+
+  const checkboxes = document.querySelectorAll('.merge-checkbox')
+  const fileIndexMap = new Map()
+  analyzedFiles.forEach((f, idx) => fileIndexMap.set(f.name, idx))
+
+  const selection = {}
+  for (const cb of checkboxes) {
+    if (!cb.checked) continue
+    const file = cb.dataset.file
+    const source = cb.dataset.source
+    const idx = fileIndexMap.get(file)
+    if (idx === undefined) continue
+    if (!selection[idx]) selection[idx] = []
+    if (!selection[idx].includes(source)) selection[idx].push(source)
+  }
+
+  if (Object.keys(selection).length === 0) return alert('至少勾选一个平台')
+
+  $('btnGenerateMerge').disabled = true
+  $('mergeStatus').textContent = '正在生成（裁剪 + 合并）...'
+  $('mergeStatus').style.color = '#007aff'
+
+  try {
+    const r = await window.api.mergeSources({
+      files: analyzedFiles,
+      selection,
+    })
+    if (r && r.ok) {
+      $('mergeStatus').textContent = '已生成: ' + r.path
+      $('mergeStatus').style.color = '#34c759'
+      alert('合并音源已保存到：\n' + r.path)
+    } else {
+      $('mergeStatus').textContent = '生成失败: ' + (r && r.error ? r.error : '未知错误')
+      $('mergeStatus').style.color = '#ff3b30'
+    }
+  } catch (err) {
+    $('mergeStatus').textContent = '生成失败: ' + (err.message || err)
+    $('mergeStatus').style.color = '#ff3b30'
+  } finally {
+    updateMergeButtonState()
   }
 })
 
@@ -190,6 +265,11 @@ function renderResult(report) {
       icon.textContent = hidden ? '▼' : '▶'
     })
   })
+
+  document.querySelectorAll('.merge-checkbox').forEach((cb) => {
+    cb.addEventListener('change', updateMergeButtonState)
+  })
+  updateMergeButtonState()
 }
 
 function renderApiCard(api) {
@@ -204,7 +284,7 @@ function renderApiCard(api) {
   } else if (!api.platforms.length) {
     body = '<div class="api-error">没有平台被测试</div>'
   } else {
-    body = api.platforms.map(renderPlatform).join('')
+    body = api.platforms.map((p) => renderPlatform(p, api.file)).join('')
   }
 
   return `
@@ -220,7 +300,7 @@ function renderApiCard(api) {
     </div>`
 }
 
-function renderPlatform(p) {
+function renderPlatform(p, apiFile) {
   const rows = p.qualities
     .map((q) => {
       let actualCell
@@ -255,6 +335,11 @@ function renderPlatform(p) {
     <div class="platform">
       <div class="platform-header">
         <div class="platform-name">
+          <input type="checkbox"
+                 class="merge-checkbox"
+                 data-file="${escapeHtml(apiFile)}"
+                 data-source="${escapeHtml(p.source)}"
+                 ${p.available ? 'checked' : ''}>
           ${p.available ? '✅' : '❌'} ${escapeHtml(p.name)} (${escapeHtml(p.source)})
           ${p.bestQuality ? `<span class="best-tag">实际最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
         </div>
