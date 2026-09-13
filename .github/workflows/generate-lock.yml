@@ -1,0 +1,22 @@
+name: Generate Lock File
+
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add package-lock.json
+          git commit -m "chore: add package-lock.json" || echo "no changes"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
