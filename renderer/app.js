@@ -37,29 +37,12 @@ $('btnSearch').addEventListener('click', async () => {
   const counts = r.counts || {}
   selectedIds = { wy: null, tx: null, kw: null, kg: null, mg: null }
 
-  // 自动填充各平台 ID 输入框
-  if (matched.wy) {
-    $('songIdWy').value = matched.wy.id || ''
-    selectedIds.wy = matched.wy
-  }
-  if (matched.tx) {
-    $('songIdTx').value = matched.tx.songmid || ''
-    selectedIds.tx = matched.tx
-  }
-  if (matched.kw) {
-    $('songIdKw').value = matched.kw.songmid || ''
-    selectedIds.kw = matched.kw
-  }
-  if (matched.kg) {
-    $('songIdKg').value = matched.kg.hash || ''
-    selectedIds.kg = matched.kg
-  }
-  if (matched.mg) {
-    $('songIdMg').value = matched.mg.copyrightId || matched.mg.id || ''
-    selectedIds.mg = matched.mg
-  }
+  if (matched.wy) { $('songIdWy').value = matched.wy.id || ''; selectedIds.wy = matched.wy }
+  if (matched.tx) { $('songIdTx').value = matched.tx.songmid || ''; selectedIds.tx = matched.tx }
+  if (matched.kw) { $('songIdKw').value = matched.kw.songmid || ''; selectedIds.kw = matched.kw }
+  if (matched.kg) { $('songIdKg').value = matched.kg.hash || ''; selectedIds.kg = matched.kg }
+  if (matched.mg) { $('songIdMg').value = matched.mg.copyrightId || matched.mg.id || ''; selectedIds.mg = matched.mg }
 
-  // 展开 ID 详情
   $('idDetails').open = true
 
   const found = Object.keys(matched).length
@@ -73,7 +56,6 @@ $('btnStart').addEventListener('click', async () => {
   const songName = $('songName').value.trim()
   if (!songName) return alert('请填写歌曲名')
 
-  // 优先使用用户输入框里的值；如果没有手动编辑，回退到搜索的结果
   const ids = {
     wy: selectedIds.wy || parseIdFromInput('songIdWy'),
     tx: selectedIds.tx || { songmid: $('songIdTx').value.trim() },
@@ -82,7 +64,6 @@ $('btnStart').addEventListener('click', async () => {
     mg: selectedIds.mg || { copyrightId: $('songIdMg').value.trim() },
   }
 
-  // 如果用户手动改了输入框，以输入框为准
   if ($('songIdWy').value.trim() && $('songIdWy').value.trim() !== (selectedIds.wy && selectedIds.wy.id || '')) {
     ids.wy = { id: $('songIdWy').value.trim() }
   }
@@ -153,7 +134,7 @@ $('btnSave').addEventListener('click', async () => {
   const data = {
     ...lastReport,
     tool: 'lx-quality-tester',
-    version: '1.1.0',
+    version: '1.2.0',
     exportedAt: new Date().toISOString(),
   }
   const r = await window.api.saveReport(JSON.stringify(data, null, 2))
@@ -196,6 +177,7 @@ function renderResult(report) {
     <div class="summary-item"><div class="num">${summary.availableApis}</div><div class="label">可用音源</div></div>
     <div class="summary-item"><div class="num">${summary.availablePlatforms}/${summary.totalPlatforms}</div><div class="label">可用平台</div></div>
     <div class="summary-item"><div class="num">${summary.availableQualities}/${summary.totalQualities}</div><div class="label">可用音质</div></div>
+    <div class="summary-item"><div class="num">${summary.downgradedQualities || 0}</div><div class="label">降级音质</div></div>
   `
   $('results').innerHTML = results.map(renderApiCard).join('')
 
@@ -240,33 +222,49 @@ function renderApiCard(api) {
 
 function renderPlatform(p) {
   const rows = p.qualities
-    .map(
-      (q) => `
-    <tr>
+    .map((q) => {
+      let actualCell
+      if (!q.urlAccessible) {
+        actualCell = '<span class="status-fail">—</span>'
+      } else if (q.downgrade) {
+        actualCell = `<span class="status-warn">${escapeHtml(q.actualQuality || '?')}</span>`
+      } else if (q.actualQuality) {
+        actualCell = `<span class="status-ok">${escapeHtml(q.actualQuality)}</span>`
+      } else {
+        actualCell = '<span style="color:#999">未知</span>'
+      }
+
+      return `
+    <tr class="${q.downgrade ? 'row-downgrade' : ''}">
       <td>${escapeHtml(q.quality)}</td>
       <td>${q.declared ? '✅' : '—'}</td>
       <td class="${q.urlObtained ? 'status-ok' : 'status-fail'}">${q.urlObtained ? '✅' : '❌'}</td>
       <td class="${q.urlAccessible ? 'status-ok' : 'status-fail'}">${q.urlAccessible ? '✅' : '❌'}</td>
+      <td>${actualCell}</td>
       <td>${q.duration}ms</td>
       <td class="url-cell" title="${escapeHtml(q.url || q.error || '')}">${escapeHtml(q.url || q.error || '—')}</td>
     </tr>`
-    )
+    })
     .join('')
+
+  const downgradeText = p.downgradedCount
+    ? `降级: <span class="status-warn">${p.downgradedCount}</span> `
+    : ''
 
   return `
     <div class="platform">
       <div class="platform-header">
         <div class="platform-name">
           ${p.available ? '✅' : '❌'} ${escapeHtml(p.name)} (${escapeHtml(p.source)})
-          ${p.bestQuality ? `<span class="best-tag">最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
+          ${p.bestQuality ? `<span class="best-tag">实际最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
         </div>
         <div class="platform-stats">
-          通过: <span class="status-ok">${p.passedCount}</span> / 错误: <span class="status-fail">${p.failedCount}</span>
+          通过: <span class="status-ok">${p.passedCount}</span> ${downgradeText}/ 错误: <span class="status-fail">${p.failedCount}</span>
         </div>
       </div>
       <table class="quality-table">
         <thead>
-          <tr><th>音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>耗时</th><th>URL / 错误</th></tr>
+          <tr><th>请求音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>实际音质</th><th>耗时</th><th>URL / 错误</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
