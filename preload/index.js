@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('api', {
   searchSong: (params) => ipcRenderer.invoke('search-song', params),
   runTest: (params) => ipcRenderer.invoke('run-test', params),
   saveReport: (content) => ipcRenderer.invoke('save-report', content),
+  analyzeSources: (files) => ipcRenderer.invoke('analyze-sources', files),
+  mergeSources: (params) => ipcRenderer.invoke('merge-sources', params),
   onTestProgress: (cb) => {
     const listener = (e, data) => cb(data)
     ipcRenderer.on('test-progress', listener)
