@@ -1,7 +1,7 @@
 {
   "name": "lx-quality-tester",
   "version": "1.0.0",
-  "description": "LX Music 音源质量测试工具",
+  "description": "LX Music source quality tester",
   "main": "main/index.js",
   "author": "lx-tester",
   "license": "MIT",
@@ -18,7 +18,7 @@
   },
   "build": {
     "appId": "com.lx.quality.tester",
-    "productName": "LX\u97f3\u6e90\u6d4b\u8bd5",
+    "productName": "LX-Quality-Tester",
     "directories": {
       "output": "dist"
     },
@@ -37,7 +37,7 @@
       ]
     },
     "portable": {
-      "artifactName": "LX\u97f3\u6e90\u6d4b\u8bd5-${version}.exe"
+      "artifactName": "LX-Quality-Tester-${version}.exe"
     }
   }
 }
