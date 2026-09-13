@@ -1,0 +1,43 @@
+{
+  "name": "lx-quality-tester",
+  "version": "1.0.0",
+  "description": "LX Music 音源质量测试工具",
+  "main": "main/index.js",
+  "author": "lx-tester",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "build": {
+    "appId": "com.lx.quality.tester",
+    "productName": "LX音源测试",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main/**/*",
+      "preload/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "LX音源测试-${version}.exe"
+    }
+  }
+}
