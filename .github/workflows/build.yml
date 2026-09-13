@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ⭐ 从 tag 提取版本号并规范化成三段式
+      # ⭐ 从 tag 提取版本号，补齐三段式，用 Node.js 写入 package.json
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
