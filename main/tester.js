@@ -289,7 +289,8 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
   const fileName = path.basename(scriptPath)
   onProgress({ type: 'api-start', file: fileName })
 
-  const loaded = loadApiSource(scriptPath)
+  // ⭐ 加 await（loadApiSource 现在是 async 函数）
+  const loaded = await loadApiSource(scriptPath)
   if (loaded.error) {
     onProgress({ type: 'api-error', file: fileName, error: loaded.error })
     return { file: fileName, info: loaded.info || {}, error: loaded.error, platforms: [] }
