@@ -50,6 +50,13 @@ body {
   font-weight: 500;
 }
 
+.hint {
+  font-size: 11px;
+  color: #999;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
 input {
   width: 100%;
   padding: 8px 10px;
@@ -168,6 +175,8 @@ details summary {
   color: #999;
   margin-bottom: 8px;
   min-height: 16px;
+  line-height: 1.4;
+  word-break: break-all;
 }
 
 .main {
@@ -312,6 +321,14 @@ details summary {
   gap: 4px;
   font-weight: 500;
   font-size: 13px;
+}
+
+.merge-checkbox {
+  margin-right: 8px;
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  accent-color: #007aff;
 }
 
 .platform-stats {
