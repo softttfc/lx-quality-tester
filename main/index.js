@@ -2,13 +2,14 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { testApiSource } = require('./tester')
+const { searchAllPlatforms } = require('./searchService')
 
 let mainWindow = null
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: 1320,
+    height: 860,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -49,6 +50,15 @@ ipcMain.handle('list-sources', async (event, dir) => {
   }
 })
 
+ipcMain.handle('search-song', async (event, { name, singer }) => {
+  if (!name) return { error: '缺少歌曲名' }
+  try {
+    return await searchAllPlatforms(name, singer)
+  } catch (e) {
+    return { error: e.message || String(e) }
+  }
+})
+
 ipcMain.handle('run-test', async (event, params) => {
   return await testApiSource({
     ...params,
@@ -62,13 +72,16 @@ ipcMain.handle('run-test', async (event, params) => {
 
 ipcMain.handle('save-report', async (event, content) => {
   const r = await dialog.showSaveDialog({
-    title: '保存报告',
+    title: '保存测试报告',
     defaultPath: `lx-test-${Date.now()}.json`,
-    filters: [{ name: 'JSON', extensions: ['json'] }],
+    filters: [
+      { name: 'JSON', extensions: ['json'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
   })
   if (r.filePath) {
     fs.writeFileSync(r.filePath, content, 'utf8')
-    return true
+    return { ok: true, path: r.filePath }
   }
-  return false
+  return { ok: false }
 })
