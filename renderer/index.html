@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>LX 音源质量测试</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <h1>🎵 LX 音源测试</h1>
+
+      <div class="section">
+        <label>音源目录</label>
+        <div class="row">
+          <button id="btnSelectDir">选择目录</button>
+        </div>
+        <div id="dirPath" class="path">未选择</div>
+        <div id="fileList" class="file-list"></div>
+      </div>
+
+      <div class="section">
+        <label>测试歌曲</label>
+        <input id="songName" placeholder="歌曲名（必填）">
+        <input id="singer" placeholder="歌手（推荐）">
+        <input id="albumName" placeholder="专辑（可选）">
+        <details>
+          <summary>各平台歌曲 ID（可选）</summary>
+          <input id="songIdWy" placeholder="网易云 songId">
+          <input id="songIdTx" placeholder="QQ音乐 songmid">
+          <input id="songIdKw" placeholder="酷我 songmid">
+          <input id="songIdKg" placeholder="酷狗 hash">
+          <input id="songIdMg" placeholder="咪咕 songmid">
+        </details>
+      </div>
+
+      <div class="section">
+        <label>测试选项</label>
+        <label class="checkbox">
+          <input type="checkbox" id="verifyUrl" checked> 验证 URL 可访问性
+        </label>
+        <div class="row">
+          <label class="inline-label">请求间隔(ms)</label>
+          <input type="number" id="delay" value="200" min="0" step="50">
+        </div>
+      </div>
+
+      <div class="section">
+        <button id="btnStart" class="primary">开始测试</button>
+        <button id="btnSave" disabled>保存报告</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div id="progress" class="progress" style="display:none">
+        <div class="progress-info">
+          <span id="progressText">准备中...</span>
+          <span id="progressPercent">0%</span>
+        </div>
+        <div class="progress-bar"><div id="progressBar"></div></div>
+      </div>
+      <div id="summary" class="summary" style="display:none"></div>
+      <div id="results" class="results">
+        <div class="empty-state">请选择音源目录并点击"开始测试"</div>
+      </div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
