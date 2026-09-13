@@ -2,18 +2,24 @@ const path = require('path')
 const axios = require('axios')
 const { loadApiSource } = require('./apiLoader')
 
+const QUALITY_RANK = [
+  'master',
+  'atmos_plus',
+  'atmos',
+  'hires',
+  'flac',
+  'flac24bit',
+  '320k',
+  '192k',
+  '128k',
+]
+
 async function verifyUrl(url, timeout = 8000) {
   if (!url || typeof url !== 'string') return false
-
   try {
-    const r = await axios.head(url, {
-      timeout,
-      validateStatus: () => true,
-      maxRedirects: 5,
-    })
+    const r = await axios.head(url, { timeout, validateStatus: () => true, maxRedirects: 5 })
     if (r.status >= 200 && r.status < 400) return true
   } catch (e) {}
-
   try {
     const r = await axios.get(url, {
       timeout,
@@ -29,16 +35,20 @@ async function verifyUrl(url, timeout = 8000) {
 }
 
 function buildMusicInfo(song, platform) {
-  const id = (song.ids && song.ids[platform]) || song.id || ''
+  const p = (song.ids && song.ids[platform]) || {}
+  const fallbackId = p.id || p.songmid || p.songId || p.hash || p.rid || ''
   return {
-    id,
-    songmid: id,
-    songId: id,
-    hash: id,
-    rid: id,
-    mid: id,
-    strMediaMid: id,
-    mediaId: id,
+    id: fallbackId,
+    songmid: p.songmid || fallbackId,
+    songId: p.songId || '',
+    hash: p.hash || '',
+    rid: p.rid || '',
+    mid: p.songmid || '',
+    strMediaMid: p.strMediaMid || '',
+    albumMid: p.albumMid || '',
+    albumId: p.albumId || '',
+    copyrightId: p.copyrightId || '',
+    mediaId: p.strMediaMid || '',
     name: song.name || '',
     singer: song.singer || '',
     albumName: song.albumName || '',
@@ -60,10 +70,7 @@ function requestMusicUrl(handlers, source, song, quality, timeout = 15000) {
       }
     }, timeout)
 
-    const info = {
-      musicInfo: buildMusicInfo(song, source),
-      type: quality,
-    }
+    const info = { musicInfo: buildMusicInfo(song, source), type: quality }
 
     try {
       const r = handler({ source, action: 'musicUrl', info })
@@ -123,7 +130,13 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
     const qualities = []
     const qualitys = declared.qualitys || []
 
-    for (const quality of qualitys) {
+    const sortedQualities = [...qualitys].sort((a, b) => {
+      const ia = QUALITY_RANK.indexOf(a)
+      const ib = QUALITY_RANK.indexOf(b)
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib)
+    })
+
+    for (const quality of sortedQualities) {
       onProgress({ type: 'quality-start', file: fileName, platform, quality })
       const t0 = Date.now()
       const r = await requestMusicUrl(handlers, platform, song, quality, options.timeout || 15000)
@@ -155,10 +168,18 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
       await new Promise((res) => setTimeout(res, options.delay || 200))
     }
 
+    const passed = qualities.filter((q) => q.urlAccessible)
+    const bestQuality = QUALITY_RANK.find((r) =>
+      passed.some((q) => q.quality === r)
+    ) || null
+
     platforms.push({
       source: platform,
       name: declared.name || platform,
-      available: qualities.some((q) => q.urlAccessible),
+      available: passed.length > 0,
+      bestQuality,
+      passedCount: passed.length,
+      failedCount: qualities.length - passed.length,
       qualities,
     })
   }
@@ -195,8 +216,13 @@ async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
       availableApis: results.filter((r) => r.platforms.some((p) => p.available)).length,
       totalQualities: allQ.length,
       availableQualities: allQ.filter((q) => q.urlAccessible).length,
+      totalPlatforms: results.reduce((s, r) => s + r.platforms.length, 0),
+      availablePlatforms: results.reduce(
+        (s, r) => s + r.platforms.filter((p) => p.available).length,
+        0
+      ),
     },
   }
 }
 
-module.exports = { testApiSource, verifyUrl }
+module.exports = { testApiSource, verifyUrl, buildMusicInfo }
