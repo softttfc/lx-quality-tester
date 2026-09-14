@@ -274,9 +274,15 @@ function renderResult(report) {
 
 function renderApiCard(api) {
   const avail = api.platforms.some((p) => p.available)
-  const meta = [api.info && api.info.name, api.info && api.info.version, api.info && api.info.author]
+  const info = api.info || {}
+  const meta = [info.name, info.version, info.author]
     .filter(Boolean)
     .join(' · ')
+
+  // ⭐ 非明文徽章
+  const plainBadge = info.plain === false
+    ? `<span class="badge badge-encrypted" title="未采用明文${info.plainReason ? '：' + escapeHtml(info.plainReason) : ''}">🔒 非明文</span>`
+    : ''
 
   let body
   if (api.error) {
@@ -292,7 +298,7 @@ function renderApiCard(api) {
       <div class="api-header">
         <div class="api-title">
           <span class="icon">▼</span>
-          <span>${avail ? '✅' : '❌'} ${escapeHtml(api.file)}</span>
+          <span>${avail ? '✅' : '❌'} ${escapeHtml(api.file)}${plainBadge}</span>
           <span class="api-meta">${escapeHtml(meta)}</span>
         </div>
       </div>
