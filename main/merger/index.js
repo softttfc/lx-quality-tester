@@ -36,9 +36,13 @@ async function analyzeSources(files) {
 }
 
 /**
- * 生成合并音源代码（含裁剪）
+ * 生成合并音源代码（含裁剪 + 按 report 排序）
+ *
+ * @param {Array} files - analyzeSources 的结果
+ * @param {Object} selection - { fileIdx: ['platform', ...] }
+ * @param {Object|null} report - 上次测试的 report，用于静态排序
  */
-function mergeSources(files, selection) {
+function mergeSources(files, selection, report) {
   // 1. 对每个文件做裁剪
   const prunedFiles = files.map((file, idx) => {
     const keepPlatforms = selection[idx] || []
@@ -60,8 +64,8 @@ function mergeSources(files, selection) {
     }
   })
 
-  // 2. 生成合并代码
-  return generateMergedCode(prunedFiles, selection)
+  // 2. 生成合并代码（透传 report）
+  return generateMergedCode(prunedFiles, selection, report)
 }
 
 module.exports = { analyzeSources, mergeSources }
