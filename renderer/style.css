@@ -284,6 +284,24 @@ details summary {
   font-weight: normal;
 }
 
+/* ⭐ 徽章样式 */
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-left: 6px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 4px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.badge-encrypted {
+  background: #7a3b00;
+  color: #ffd9a0;
+  border: 1px solid #b35c00;
+}
+
 .api-body {
   border-top: 1px solid #f0f0f0;
   padding: 12px 16px;
