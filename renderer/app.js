@@ -140,7 +140,7 @@ $('btnSave').addEventListener('click', async () => {
   const data = {
     ...lastReport,
     tool: 'lx-quality-tester',
-    version: '1.3.0',
+    version: '1.4.0',
     exportedAt: new Date().toISOString(),
   }
   const r = await window.api.saveReport(JSON.stringify(data, null, 2))
@@ -196,13 +196,15 @@ $('btnGenerateMerge').addEventListener('click', async () => {
   if (Object.keys(selection).length === 0) return alert('至少勾选一个平台')
 
   $('btnGenerateMerge').disabled = true
-  $('mergeStatus').textContent = '正在生成（裁剪 + 合并）...'
+  $('mergeStatus').textContent = '正在生成（裁剪 + 排序 + 合并）...'
   $('mergeStatus').style.color = '#007aff'
 
   try {
+    // ⭐ 把 lastReport 一起传给主进程，让 generator 可以按测试结果排序
     const r = await window.api.mergeSources({
       files: analyzedFiles,
       selection,
+      report: lastReport,
     })
     if (r && r.ok) {
       $('mergeStatus').textContent = '已生成: ' + r.path
