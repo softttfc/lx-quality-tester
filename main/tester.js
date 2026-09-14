@@ -1,6 +1,10 @@
 const path = require('path')
 const axios = require('axios')
+const { execFile } = require('child_process')
+const { promisify } = require('util')
 const { loadApiSource } = require('./apiLoader')
+
+const execFileAsync = promisify(execFile)
 
 const QUALITY_RANK = [
   'master',
@@ -14,16 +18,37 @@ const QUALITY_RANK = [
   '128k',
 ]
 
+// ==================== 播放器请求头模拟 ====================
+
+// 模拟 LX Music 播放器发起的请求头：
+// - wy 平台 CDN 需要空 UA（参考 download.ts 的 WY_MEDIA_HEADERS）
+// - 其他平台需要标准移动端 UA
+const PLAYER_UA_DEFAULT =
+  'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36'
+const PLAYER_UA_WY = ''
+
+function getPlayerUserAgent(source) {
+  return source === 'wy' ? PLAYER_UA_WY : PLAYER_UA_DEFAULT
+}
+
 // ==================== 音频格式解析 ====================
 
 /**
  * 从 URL 拉取前 N 字节并检测实际音质
+ * @param {string} url
+ * @param {string} source - 'kw' | 'kg' | 'tx' | 'wy' | 'mg'
+ * @param {number} bytes
+ * @param {number} timeout
  */
-async function fetchAndDetect(url, bytes = 16384, timeout = 8000) {
+async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
   const result = { accessible: false, quality: null, contentType: null, size: null }
   try {
+    const headers = {
+      Range: `bytes=0-${bytes - 1}`,
+      'User-Agent': getPlayerUserAgent(source),
+    }
     const res = await axios.get(url, {
-      headers: { Range: `bytes=0-${bytes - 1}` },
+      headers,
       responseType: 'stream',
       timeout,
       validateStatus: () => true,
@@ -64,6 +89,35 @@ async function fetchAndDetect(url, bytes = 16384, timeout = 8000) {
     // 忽略错误
   }
   return result
+}
+
+/**
+ * 用 ffmpeg 解码前 3 秒，验证 URL 是否真的能播放
+ * 更接近 LX Music 播放器行为（完整建立连接 + 解码）
+ */
+async function checkPlayableWithFfmpeg(url, source, timeout = 15000) {
+  const args = ['-v', 'error', '-nostdin']
+
+  // 非 wy 平台传标准 UA；wy 平台不传（让 ffmpeg 用默认 UA）
+  if (source !== 'wy') {
+    args.push('-user_agent', PLAYER_UA_DEFAULT)
+  }
+
+  args.push('-i', url, '-t', '3', '-f', 'null', '-')
+
+  try {
+    await execFileAsync('ffmpeg', args, {
+      timeout,
+      maxBuffer: 1024 * 1024,
+    })
+    return { playable: true, error: null }
+  } catch (e) {
+    const errMsg =
+      e && (e.stderr || e.message)
+        ? String(e.stderr || e.message).slice(0, 300)
+        : 'ffmpeg failed'
+    return { playable: false, error: errMsg }
+  }
 }
 
 /**
@@ -111,27 +165,17 @@ function detectQualityFromBuffer(buf) {
   return null
 }
 
-/**
- * 解析 FLAC 的 STREAMINFO 元数据块
- */
 function parseFlacStreamInfo(buf) {
-  // fLaC (4) + METADATA_BLOCK_HEADER (4) + STREAMINFO (34)
   if (buf.length < 42) return null
 
-  // STREAMINFO 从 byte 8 开始
   const si = 8
-  // 跳过：min block size (2) + max block size (2) + min frame size (3) + max frame size (3) = 10 字节
-  // sample rate 从 si + 10 = byte 18 开始
   const b18 = buf[si + 10]
   const b19 = buf[si + 11]
   const b20 = buf[si + 12]
   const b21 = buf[si + 13]
 
-  // 20 bits sample rate
   const sampleRate = (b18 << 12) | (b19 << 4) | ((b20 >> 4) & 0x0f)
-  // 3 bits channels - 1
   const channels = ((b20 >> 1) & 0x07) + 1
-  // 5 bits bits-per-sample - 1
   const bitDepth = (((b20 & 0x01) << 4) | ((b21 >> 4) & 0x0f)) + 1
 
   if (sampleRate < 8000 || sampleRate > 768000) return null
@@ -140,26 +184,18 @@ function parseFlacStreamInfo(buf) {
   return { sampleRate, channels, bitDepth }
 }
 
-/**
- * 根据 FLAC 的采样率和位深，映射到标准音质名称
- */
 function mapFlacToQuality(sampleRate, bitDepth) {
-  // 高采样率或高比特深度
   if (sampleRate >= 192000) return 'master'
   if (sampleRate >= 96000 || bitDepth >= 24) return 'hires'
   if (sampleRate >= 48000) return 'flac'
-  return 'flac'  // 44.1kHz / 16bit
+  return 'flac'
 }
 
-/**
- * 解析 MP3 帧头比特率
- */
 function parseMp3Bitrate(buf) {
   const bitrateTableV1L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
   const bitrateTableV2L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0]
 
   let offset = 0
-  // 跳过 ID3v2 header
   if (buf.slice(0, 3).toString('ascii') === 'ID3' && buf.length >= 10) {
     const size =
       ((buf[6] & 0x7f) << 21) |
@@ -171,11 +207,11 @@ function parseMp3Bitrate(buf) {
 
   for (let i = offset; i < buf.length - 4; i++) {
     if (buf[i] === 0xff && (buf[i + 1] & 0xe0) === 0xe0) {
-      const versionBits = (buf[i + 1] >> 3) & 0x03  // 00=MPEG2.5, 10=MPEG2, 11=MPEG1
-      const layerBits = (buf[i + 1] >> 1) & 0x03    // 01=Layer3, 10=Layer2, 11=Layer1
+      const versionBits = (buf[i + 1] >> 3) & 0x03
+      const layerBits = (buf[i + 1] >> 1) & 0x03
       const bitrateIndex = (buf[i + 2] >> 4) & 0x0f
 
-      if (layerBits !== 0x01) continue  // 只处理 Layer3
+      if (layerBits !== 0x01) continue
 
       const table = versionBits === 0x03 ? bitrateTableV1L3 : bitrateTableV2L3
       const bitrate = table[bitrateIndex]
@@ -185,9 +221,6 @@ function parseMp3Bitrate(buf) {
   return null
 }
 
-/**
- * MP3 比特率 → 音质名称
- */
 function mapMp3ToQuality(bitrate) {
   if (!bitrate) return null
   if (bitrate >= 320) return '320k'
@@ -202,13 +235,8 @@ function qualityIndex(q) {
   return idx === -1 ? 99 : idx
 }
 
-/**
- * 判断是否降级：
- *   actual 音质 < requested 音质 → 降级
- *   actual 音质 >= requested 音质 → 通过
- */
 function isDowngrade(requested, actual) {
-  if (!actual) return false  // 无法判断，不算降级
+  if (!actual) return false
   return qualityIndex(actual) > qualityIndex(requested)
 }
 
@@ -289,7 +317,6 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
   const fileName = path.basename(scriptPath)
   onProgress({ type: 'api-start', file: fileName })
 
-  // ⭐ 加 await（loadApiSource 现在是 async 函数）
   const loaded = await loadApiSource(scriptPath)
   if (loaded.error) {
     onProgress({ type: 'api-error', file: fileName, error: loaded.error })
@@ -322,12 +349,34 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
 
       let urlAccessible = false
       let actualQuality = null
+      let playable = null
+      let playableError = null
+
       if (urlObtained) {
-        const detected = await fetchAndDetect(url, 16384, options.verifyTimeout || 8000)
+        // 1. 拉前 16KB 探测文件头（模拟播放器请求头）
+        const detected = await fetchAndDetect(
+          url,
+          platform,
+          16384,
+          options.verifyTimeout || 8000
+        )
         urlAccessible = detected.accessible
         actualQuality = detected.quality
+
+        // 2. ffmpeg 验证能否实际解码（默认开启）
+        if (options.enableFfmpegCheck !== false && urlAccessible) {
+          const ff = await checkPlayableWithFfmpeg(
+            url,
+            platform,
+            options.ffmpegTimeout || 15000
+          )
+          playable = ff.playable
+          playableError = ff.error
+        }
       }
 
+      // ⭐ 只有"可访问 + 可播放 + 不降级"才算通过
+      const passes = urlAccessible && playable !== false && !isDowngrade(quality, actualQuality)
       const downgrade = urlAccessible && isDowngrade(quality, actualQuality)
 
       qualities.push({
@@ -335,8 +384,11 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
         declared: true,
         urlObtained,
         urlAccessible,
+        playable,
+        playableError,
         actualQuality,
         downgrade,
+        passes,
         url: url || null,
         error: r.error || null,
         duration: Date.now() - t0,
@@ -349,6 +401,7 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
         quality,
         urlObtained,
         urlAccessible,
+        playable,
         actualQuality,
         downgrade,
       })
@@ -357,14 +410,19 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
     }
 
     // 统计
-    const passed = qualities.filter((q) => q.urlAccessible && !q.downgrade)
-    const downgraded = qualities.filter((q) => q.urlAccessible && q.downgrade)
+    const passed = qualities.filter((q) => q.passes)
+    const downgraded = qualities.filter((q) => q.downgrade)
+    const unplayable = qualities.filter(
+      (q) => q.urlAccessible && q.playable === false
+    )
     const failed = qualities.filter((q) => !q.urlAccessible)
 
-    // 实际最高音质：在所有"可访问"的结果里，取 actualQuality 最高
-    const accessibleQualities = qualities.filter((q) => q.urlAccessible)
+    // 实际最高音质：只从"可访问 + 可播放"的里取
+    const usableQualities = qualities.filter(
+      (q) => q.urlAccessible && q.playable !== false
+    )
     let bestQuality = null
-    for (const q of accessibleQualities) {
+    for (const q of usableQualities) {
       const candidate = q.actualQuality || q.quality
       if (!bestQuality || qualityIndex(candidate) < qualityIndex(bestQuality)) {
         bestQuality = candidate
@@ -374,10 +432,11 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
     platforms.push({
       source: platform,
       name: declared.name || platform,
-      available: accessibleQualities.length > 0,
+      available: usableQualities.length > 0,
       bestQuality,
       passedCount: passed.length,
       downgradedCount: downgraded.length,
+      unplayableCount: unplayable.length,
       failedCount: failed.length,
       qualities,
     })
@@ -412,10 +471,15 @@ async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
     results,
     summary: {
       totalApis: results.length,
-      availableApis: results.filter((r) => r.platforms.some((p) => p.available)).length,
+      availableApis: results.filter((r) =>
+        r.platforms.some((p) => p.available)
+      ).length,
       totalQualities: allQ.length,
-      availableQualities: allQ.filter((q) => q.urlAccessible).length,
+      availableQualities: allQ.filter((q) => q.passes).length,
       downgradedQualities: allQ.filter((q) => q.downgrade).length,
+      unplayableQualities: allQ.filter(
+        (q) => q.urlAccessible && q.playable === false
+      ).length,
       totalPlatforms: results.reduce((s, r) => s + r.platforms.length, 0),
       availablePlatforms: results.reduce(
         (s, r) => s + r.platforms.filter((p) => p.available).length,
