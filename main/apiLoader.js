@@ -19,6 +19,29 @@ function parseScriptHeader(script) {
   }
 }
 
+/**
+ * 判定音源脚本是否采用明文
+ * - 命中 eval / Function 构造 / atob / fromCharCode / 超长 base64 / 十六进制混淆 → 非明文
+ * - 否则视为明文
+ */
+function detectPlainSource(script) {
+  if (typeof script !== 'string' || !script.trim()) {
+    return { plain: false, plainReason: '空文件' }
+  }
+  const suspicious = [
+    { re: /\beval\s*\(/,              reason: '包含 eval 动态执行' },
+    { re: /\bnew\s+Function\s*\(/,    reason: '包含 Function 构造' },
+    { re: /\batob\s*\(/,              reason: '包含 atob 解码' },
+    { re: /fromCharCode/,             reason: '包含 fromCharCode 拼接' },
+    { re: /[\w+/]{500,}={0,2}/,       reason: '疑似超长 base64 串' },
+    { re: /(\\x[0-9a-fA-F]{2}){30,}/, reason: '疑似十六进制混淆' },
+  ]
+  for (const { re, reason } of suspicious) {
+    if (re.test(script)) return { plain: false, plainReason: reason }
+  }
+  return { plain: true, plainReason: '' }
+}
+
 async function loadApiSource(scriptPath, options = {}) {
   const {
     initTimeout = 15000,      // 等待 inited 事件的超时（ms）
@@ -29,10 +52,15 @@ async function loadApiSource(scriptPath, options = {}) {
   try {
     script = fs.readFileSync(scriptPath, 'utf8')
   } catch (err) {
-    return { error: `读取失败: ${err.message}` }
+    return {
+      error: `读取失败: ${err.message}`,
+      info: { plain: false, plainReason: '读取失败' },
+    }
   }
 
-  const info = parseScriptHeader(script)
+  const headerInfo = parseScriptHeader(script)
+  const plainInfo = detectPlainSource(script)
+  const info = { ...headerInfo, ...plainInfo }
   const { lx, handlers } = createLxSandbox({ ...info, rawScript: script })
 
   const sandbox = {
