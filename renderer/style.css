@@ -220,7 +220,7 @@ details summary {
   border-radius: 8px;
   margin-bottom: 16px;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 16px;
 }
 
@@ -284,7 +284,6 @@ details summary {
   font-weight: normal;
 }
 
-/* ⭐ 徽章样式 */
 .badge {
   display: inline-block;
   padding: 1px 6px;
@@ -399,6 +398,10 @@ details summary {
 
 .row-downgrade {
   background: #fff8e6;
+}
+
+.row-unplayable {
+  background: #fff0f0;
 }
 
 .url-cell {
