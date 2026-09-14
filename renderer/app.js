@@ -103,6 +103,8 @@ $('btnStart').addEventListener('click', async () => {
   const options = {
     verifyUrl: $('verifyUrl').checked,
     delay: parseInt($('delay').value, 10) || 200,
+    enableFfmpegCheck: true,
+    ffmpegTimeout: 15000,
   }
 
   setRunning(true)
@@ -138,7 +140,7 @@ $('btnSave').addEventListener('click', async () => {
   const data = {
     ...lastReport,
     tool: 'lx-quality-tester',
-    version: '1.2.0',
+    version: '1.3.0',
     exportedAt: new Date().toISOString(),
   }
   const r = await window.api.saveReport(JSON.stringify(data, null, 2))
@@ -253,6 +255,7 @@ function renderResult(report) {
     <div class="summary-item"><div class="num">${summary.availablePlatforms}/${summary.totalPlatforms}</div><div class="label">可用平台</div></div>
     <div class="summary-item"><div class="num">${summary.availableQualities}/${summary.totalQualities}</div><div class="label">可用音质</div></div>
     <div class="summary-item"><div class="num">${summary.downgradedQualities || 0}</div><div class="label">降级音质</div></div>
+    <div class="summary-item"><div class="num">${summary.unplayableQualities || 0}</div><div class="label">不可播放</div></div>
   `
   $('results').innerHTML = results.map(renderApiCard).join('')
 
@@ -279,7 +282,6 @@ function renderApiCard(api) {
     .filter(Boolean)
     .join(' · ')
 
-  // ⭐ 非明文徽章
   const plainBadge = info.plain === false
     ? `<span class="badge badge-encrypted" title="未采用明文${info.plainReason ? '：' + escapeHtml(info.plainReason) : ''}">🔒 非明文</span>`
     : ''
@@ -320,12 +322,26 @@ function renderPlatform(p, apiFile) {
         actualCell = '<span style="color:#999">未知</span>'
       }
 
+      let playableCell
+      if (q.playable === true) {
+        playableCell = '<span class="status-ok">✅</span>'
+      } else if (q.playable === false) {
+        playableCell = `<span class="status-fail" title="${escapeHtml(q.playableError || '')}">❌</span>`
+      } else {
+        playableCell = '<span style="color:#999">—</span>'
+      }
+
+      const rowClass = q.downgrade
+        ? 'row-downgrade'
+        : (q.urlAccessible && q.playable === false ? 'row-unplayable' : '')
+
       return `
-    <tr class="${q.downgrade ? 'row-downgrade' : ''}">
+    <tr class="${rowClass}">
       <td>${escapeHtml(q.quality)}</td>
       <td>${q.declared ? '✅' : '—'}</td>
       <td class="${q.urlObtained ? 'status-ok' : 'status-fail'}">${q.urlObtained ? '✅' : '❌'}</td>
       <td class="${q.urlAccessible ? 'status-ok' : 'status-fail'}">${q.urlAccessible ? '✅' : '❌'}</td>
+      <td>${playableCell}</td>
       <td>${actualCell}</td>
       <td>${q.duration}ms</td>
       <td class="url-cell" title="${escapeHtml(q.url || q.error || '')}">${escapeHtml(q.url || q.error || '—')}</td>
@@ -335,6 +351,9 @@ function renderPlatform(p, apiFile) {
 
   const downgradeText = p.downgradedCount
     ? `降级: <span class="status-warn">${p.downgradedCount}</span> `
+    : ''
+  const unplayableText = p.unplayableCount
+    ? `不可播: <span class="status-fail">${p.unplayableCount}</span> `
     : ''
 
   return `
@@ -350,12 +369,12 @@ function renderPlatform(p, apiFile) {
           ${p.bestQuality ? `<span class="best-tag">实际最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
         </div>
         <div class="platform-stats">
-          通过: <span class="status-ok">${p.passedCount}</span> ${downgradeText}/ 错误: <span class="status-fail">${p.failedCount}</span>
+          通过: <span class="status-ok">${p.passedCount}</span> ${downgradeText}${unplayableText}/ 错误: <span class="status-fail">${p.failedCount}</span>
         </div>
       </div>
       <table class="quality-table">
         <thead>
-          <tr><th>请求音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>实际音质</th><th>耗时</th><th>URL / 错误</th></tr>
+          <tr><th>请求音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>可播</th><th>实际音质</th><th>耗时</th><th>URL / 错误</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
