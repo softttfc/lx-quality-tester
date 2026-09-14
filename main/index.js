@@ -102,10 +102,10 @@ ipcMain.handle('analyze-sources', async (event, files) => {
   }
 })
 
-// ⭐ 生成合并音源
-ipcMain.handle('merge-sources', async (event, { files, selection }) => {
+// ⭐ 生成合并音源（新增 report 参数）
+ipcMain.handle('merge-sources', async (event, { files, selection, report }) => {
   try {
-    const code = mergeSources(files, selection)
+    const code = mergeSources(files, selection, report)
     const r = await dialog.showSaveDialog({
       title: '保存合并音源',
       defaultPath: `merged-source-${Date.now()}.js`,
