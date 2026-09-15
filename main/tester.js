@@ -242,27 +242,41 @@ function isDowngrade(requested, actual) {
 
 // ==================== 音源测试逻辑 ====================
 
+/**
+ * 构建 musicInfo，模拟 LX Music 的 toOldMusicInfo 行为
+ *
+ * ⭐ 关键点：ID 类字段（hash/songId/rid/...）在缺失时必须是 undefined，
+ * 而不是空字符串。否则音源脚本里的 `musicInfo.hash ?? musicInfo.songmid`
+ * 不会回退（`??` 只在 null/undefined 时回退）。
+ *
+ * name/singer/albumName/interval 是展示字段，保留空字符串兜底无影响。
+ */
 function buildMusicInfo(song, platform) {
   const p = (song.ids && song.ids[platform]) || {}
   const fallbackId = p.id || p.songmid || p.songId || p.hash || p.rid || ''
-  return {
+
+  const info = {
     id: fallbackId,
     songmid: p.songmid || fallbackId,
-    songId: p.songId || '',
-    hash: p.hash || '',
-    rid: p.rid || '',
-    mid: p.songmid || '',
-    strMediaMid: p.strMediaMid || '',
-    albumMid: p.albumMid || '',
-    albumId: p.albumId || '',
-    copyrightId: p.copyrightId || '',
-    mediaId: p.strMediaMid || '',
     name: song.name || '',
     singer: song.singer || '',
     albumName: song.albumName || '',
     interval: song.interval || '04:30',
     meta: {},
   }
+
+  // ⭐ 只在有值时设置 ID 类字段，缺失时保持 undefined
+  if (p.songId) info.songId = p.songId
+  if (p.hash) info.hash = p.hash
+  if (p.rid) info.rid = p.rid
+  if (p.mid) info.mid = p.mid
+  if (p.strMediaMid) info.strMediaMid = p.strMediaMid
+  if (p.albumMid) info.albumMid = p.albumMid
+  if (p.albumId) info.albumId = p.albumId
+  if (p.copyrightId) info.copyrightId = p.copyrightId
+  if (p.mediaId) info.mediaId = p.mediaId
+
+  return info
 }
 
 function requestMusicUrl(handlers, source, song, quality, timeout = 15000) {
