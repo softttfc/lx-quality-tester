@@ -243,38 +243,57 @@ function isDowngrade(requested, actual) {
 // ==================== 音源测试逻辑 ====================
 
 /**
- * 构建 musicInfo，模拟 LX Music 的 toOldMusicInfo 行为
+ * 构建 musicInfo，完全模拟 LX Music 的 toOldMusicInfo 行为
  *
- * ⭐ 关键点：ID 类字段（hash/songId/rid/...）在缺失时必须是 undefined，
- * 而不是空字符串。否则音源脚本里的 `musicInfo.hash ?? musicInfo.songmid`
- * 不会回退（`??` 只在 null/undefined 时回退）。
- *
- * name/singer/albumName/interval 是展示字段，保留空字符串兜底无影响。
+ * 关键点：
+ * 1. ID 类字段（hash/songId/rid/...）缺失时保持 undefined，
+ *    而不是空字符串。否则音源脚本里的 `musicInfo.hash ?? musicInfo.songmid`
+ *    不会回退（`??` 只在 null/undefined 时回退）。
+ * 2. 不设置 meta 字段（LX Music 传的对象里没有 meta）。
+ * 3. 不设置 id 字段（LX Music 传的对象里没有 id）。
+ * 4. 按平台白名单设置平台特有字段。
+ * 5. 补齐 img / typeUrl / types / _types 字段。
  */
 function buildMusicInfo(song, platform) {
   const p = (song.ids && song.ids[platform]) || {}
-  const fallbackId = p.id || p.songmid || p.songId || p.hash || p.rid || ''
+  // 主 ID 兜底顺序：songmid > hash > songId > rid
+  const primaryId = p.songmid || p.hash || p.songId || p.rid || ''
 
+  // ⭐ 通用字段（与 LX Music 的 toOldMusicInfo 结构对齐）
   const info = {
-    id: fallbackId,
-    songmid: p.songmid || fallbackId,
     name: song.name || '',
     singer: song.singer || '',
+    source: platform,
+    interval: song.interval || null,       // 与 LX 对齐：可能是 null
     albumName: song.albumName || '',
-    interval: song.interval || '04:30',
-    meta: {},
+    img: '',                                // ⭐ 补齐
+    typeUrl: {},                            // ⭐ 补齐
+    types: [],                              // ⭐ 补齐
+    _types: {},                             // ⭐ 补齐
   }
 
-  // ⭐ 只在有值时设置 ID 类字段，缺失时保持 undefined
-  if (p.songId) info.songId = p.songId
-  if (p.hash) info.hash = p.hash
-  if (p.rid) info.rid = p.rid
-  if (p.mid) info.mid = p.mid
-  if (p.strMediaMid) info.strMediaMid = p.strMediaMid
-  if (p.albumMid) info.albumMid = p.albumMid
+  // 有值才设置，缺失时保持 undefined（与 LX 行为一致）
+  if (primaryId) info.songmid = primaryId
   if (p.albumId) info.albumId = p.albumId
-  if (p.copyrightId) info.copyrightId = p.copyrightId
-  if (p.mediaId) info.mediaId = p.mediaId
+
+  // ⭐ 按平台白名单设置平台特有字段（与 LX Music 的 switch-case 一致）
+  switch (platform) {
+    case 'kg':
+      if (p.hash) info.hash = p.hash
+      break
+    case 'tx':
+      if (p.strMediaMid) info.strMediaMid = p.strMediaMid
+      if (p.albumMid) info.albumMid = p.albumMid
+      if (p.songId) info.songId = p.songId
+      break
+    case 'mg':
+      if (p.copyrightId) info.copyrightId = p.copyrightId
+      if (p.lrcUrl) info.lrcUrl = p.lrcUrl
+      if (p.mrcUrl) info.mrcUrl = p.mrcUrl
+      if (p.trcUrl) info.trcUrl = p.trcUrl
+      break
+    // kw / wy 不加额外字段（与 LX 一致）
+  }
 
   return info
 }
