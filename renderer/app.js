@@ -140,7 +140,7 @@ $('btnSave').addEventListener('click', async () => {
   const data = {
     ...lastReport,
     tool: 'lx-quality-tester',
-    version: '1.4.0',
+    version: '1.5.0',
     exportedAt: new Date().toISOString(),
   }
   const r = await window.api.saveReport(JSON.stringify(data, null, 2))
@@ -149,10 +149,10 @@ $('btnSave').addEventListener('click', async () => {
   }
 })
 
-// ⭐ "只显示明文音源"过滤开关
-$('filterPlainOnly').addEventListener('change', () => {
-  applyPlainFilter()
-})
+// ⭐ 三个过滤开关统一走 applyAllFilters
+$('filterPlainOnly').addEventListener('change', applyAllFilters)
+$('filterLowRiskOnly').addEventListener('change', applyAllFilters)
+$('filterNoExploit').addEventListener('change', applyAllFilters)
 
 async function prepareMergeData() {
   if (!availableFiles.length) return
@@ -175,26 +175,145 @@ async function prepareMergeData() {
   }
 }
 
-/**
- * 根据 filterPlainOnly 的勾选状态，给非明文卡片加/去 filtered-out class
- * 过滤仅影响 UI 显示与合并可选范围，不影响已完成的测试结果
- */
-function applyPlainFilter() {
-  const onlyPlain = $('filterPlainOnly').checked
+// ═══════════════════════════════════════════════════════
+// 风险提示模块（v1.5 新增）
+// ═══════════════════════════════════════════════════════
+
+function renderRiskBadge(info) {
+  const risk = info && info.risk
+  if (!risk || risk.level === 'clean') return ''
+  const map = {
+    high:   { icon: '🔴', text: '高风险', cls: 'badge-risk-high' },
+    medium: { icon: '🟡', text: '中风险', cls: 'badge-risk-medium' },
+    low:    { icon: '🟢', text: '低风险', cls: 'badge-risk-low' },
+  }
+  const r = map[risk.level]
+  if (!r) return ''
+  const title = (risk.reasons || []).map(escapeHtml).join('\n')
+  return `<span class="badge ${r.cls}" title="${title}">${r.icon} ${r.text}</span>`
+}
+
+function renderRiskPanel(info) {
+  const risk = info && info.risk
+  if (!risk || risk.level === 'clean') return ''
+  const c = risk.categories || {}
+  const rows = []
+
+  if (c.hardcodedSecrets && c.hardcodedSecrets.count) {
+    const samples = c.hardcodedSecrets.samples || []
+    rows.push(`
+      <div class="risk-item">
+        <div class="risk-item-title">🔑 硬编码密钥（${c.hardcodedSecrets.count} 处）</div>
+        <ul>${samples.map((s) => `<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul>
+      </div>`)
+  }
+
+  if (c.readsUserCredentials && c.readsUserCredentials.fields && c.readsUserCredentials.fields.length) {
+    rows.push(`
+      <div class="risk-item">
+        <div class="risk-item-title">👤 读取头部凭据</div>
+        <ul>${c.readsUserCredentials.fields.map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>
+      </div>`)
+  }
+
+  if (c.httpHosts && c.httpHosts.count) {
+    const list = c.httpHosts.list || []
+    const shown = list.slice(0, 10)
+    rows.push(`
+      <div class="risk-item">
+        <div class="risk-item-title">🌐 非官方 HTTP 域名（${c.httpHosts.count} 个）</div>
+        <ul>
+          ${shown.map((h) => `<li><span class="status-fail">http://${escapeHtml(h)}</span></li>`).join('')}
+          ${list.length > 10 ? `<li>...及其他 ${list.length - 10} 个</li>` : ''}
+        </ul>
+      </div>`)
+  }
+
+  if (c.untrustedHosts && c.untrustedHosts.count) {
+    const list = c.untrustedHosts.list || []
+    const shown = list.slice(0, 10)
+    rows.push(`
+      <div class="risk-item">
+        <div class="risk-item-title">🌐 非官方 HTTPS 域名（${c.untrustedHosts.count} 个）</div>
+        <ul>
+          ${shown.map((h) => `<li>https://${escapeHtml(h)}</li>`).join('')}
+          ${list.length > 10 ? `<li>...及其他 ${list.length - 10} 个</li>` : ''}
+        </ul>
+      </div>`)
+  }
+
+  if (c.containsExploit && c.containsExploit.keywords && c.containsExploit.keywords.length) {
+    rows.push(`
+      <div class="risk-item">
+        <div class="risk-item-title">⚠️ 越权/破解逻辑</div>
+        <ul>${c.containsExploit.keywords.map((k) => `<li>${escapeHtml(k)}</li>`).join('')}</ul>
+      </div>`)
+  }
+
+  if (!rows.length) return ''
+
+  const levelMap = {
+    high:   { icon: '🔴', text: '高', cls: 'risk-high' },
+    medium: { icon: '🟡', text: '中', cls: 'risk-medium' },
+    low:    { icon: '🟢', text: '低', cls: 'risk-low' },
+  }
+  const lv = levelMap[risk.level] || levelMap.low
+  const badgeCls = risk.level === 'high' ? 'badge-risk-high'
+    : risk.level === 'medium' ? 'badge-risk-medium'
+    : 'badge-risk-low'
+
+  return `
+    <details class="risk-panel ${lv.cls}" open>
+      <summary class="risk-panel-summary">
+        <span class="badge ${badgeCls}">${lv.icon} 风险等级：${lv.text}（评分 ${risk.score}）</span>
+        <span class="risk-panel-hint">${escapeHtml((risk.reasons || []).join(' · '))}</span>
+      </summary>
+      <div class="risk-panel-body">${rows.join('')}</div>
+    </details>`
+}
+
+function updateRiskSummary() {
+  const counts = { high: 0, medium: 0, low: 0, clean: 0 }
   document.querySelectorAll('.api-card').forEach((card) => {
-    const isPlain = card.dataset.plain === 'true'
-    if (onlyPlain && !isPlain) {
-      card.classList.add('filtered-out')
-    } else {
-      card.classList.remove('filtered-out')
-    }
+    const level = card.dataset.riskLevel || 'clean'
+    if (counts[level] !== undefined) counts[level]++
+    else counts.clean++
   })
-  updateMergeButtonState()
+  $('riskCountHigh').textContent = counts.high
+  $('riskCountMedium').textContent = counts.medium
+  $('riskCountLow').textContent = counts.low
+  $('riskCountClean').textContent = counts.clean
 }
 
 /**
- * 只统计"当前未被过滤掉"的卡片中的勾选，避免隐藏卡片被计入
+ * 统一过滤：明文 + 低风险 + 不含越权
+ * 所有过滤开关变化都调用此函数
  */
+function applyAllFilters() {
+  const onlyPlain = $('filterPlainOnly').checked
+  const lowRiskOnly = $('filterLowRiskOnly').checked
+  const noExploit = $('filterNoExploit').checked
+
+  document.querySelectorAll('.api-card').forEach((card) => {
+    const isPlain = card.dataset.plain === 'true'
+    const riskLevel = card.dataset.riskLevel || 'clean'
+    const hasExploit = card.dataset.hasExploit === 'true'
+
+    let visible = true
+    if (onlyPlain && !isPlain) visible = false
+    if (lowRiskOnly && riskLevel !== 'clean' && riskLevel !== 'low') visible = false
+    if (noExploit && hasExploit) visible = false
+
+    card.classList.toggle('filtered-out', !visible)
+  })
+
+  updateMergeButtonState()
+}
+
+// ═══════════════════════════════════════════════════════
+// 合并按钮与生成
+// ═══════════════════════════════════════════════════════
+
 function updateMergeButtonState() {
   const anyChecked = document.querySelectorAll(
     '.api-card:not(.filtered-out) .merge-checkbox:checked'
@@ -205,11 +324,9 @@ function updateMergeButtonState() {
 $('btnGenerateMerge').addEventListener('click', async () => {
   if (!analyzedFiles) return alert('请先完成测试')
 
-  // ⭐ 只取"当前显示中（未被过滤掉）"的卡片的勾选
   const checkboxes = document.querySelectorAll(
     '.api-card:not(.filtered-out) .merge-checkbox'
   )
-  // ⭐ fileIndexMap 仍基于完整的 analyzedFiles，保证生成的 selection 索引正确
   const fileIndexMap = new Map()
   analyzedFiles.forEach((f, idx) => fileIndexMap.set(f.name, idx))
 
@@ -231,7 +348,6 @@ $('btnGenerateMerge').addEventListener('click', async () => {
   $('mergeStatus').style.color = '#007aff'
 
   try {
-    // ⭐ 把 lastReport 一起传给主进程，让 generator 可以按测试结果排序
     const r = await window.api.mergeSources({
       files: analyzedFiles,
       selection,
@@ -306,15 +422,13 @@ function renderResult(report) {
     cb.addEventListener('change', updateMergeButtonState)
   })
 
-  // ⭐ 渲染完成后，应用一次过滤状态（例如上一次已勾选过"只显示明文"）
-  applyPlainFilter()
+  // ⭐ 渲染完成后：先刷新风险汇总，再应用所有过滤
+  updateRiskSummary()
+  applyAllFilters()
 }
 
 /**
  * 根据 info.plainKind 生成徽章 HTML
- * - 'weak'        → ⚠️ 疑似混淆（弱规则评分超阈值）
- * - plain === false（含 'strong' 及历史无 plainKind 数据） → 🔒 非明文
- * - 其余（'plain'）→ 无徽章
  */
 function renderPlainBadge(info) {
   if (!info) return ''
@@ -342,8 +456,12 @@ function renderApiCard(api) {
     .join(' · ')
 
   const plainBadge = renderPlainBadge(info)
-  // ⭐ 供"只显示明文音源"过滤使用：plain !== false 视为明文
+  const riskBadge = renderRiskBadge(info)
+  const riskPanel = renderRiskPanel(info)
+
   const isPlain = info.plain !== false
+  const riskLevel = (info.risk && info.risk.level) || 'clean'
+  const hasExploit = !!(info.risk && info.risk.hasExploit)
 
   let body
   if (api.error) {
@@ -355,15 +473,19 @@ function renderApiCard(api) {
   }
 
   return `
-    <div class="api-card" data-plain="${isPlain ? 'true' : 'false'}" data-plain-kind="${escapeHtml(info.plainKind || '')}">
+    <div class="api-card"
+         data-plain="${isPlain ? 'true' : 'false'}"
+         data-plain-kind="${escapeHtml(info.plainKind || '')}"
+         data-risk-level="${riskLevel}"
+         data-has-exploit="${hasExploit ? 'true' : 'false'}">
       <div class="api-header">
         <div class="api-title">
           <span class="icon">▼</span>
-          <span>${avail ? '✅' : '❌'} ${escapeHtml(api.file)}${plainBadge}</span>
+          <span>${avail ? '✅' : '❌'} ${escapeHtml(api.file)}${plainBadge}${riskBadge}</span>
           <span class="api-meta">${escapeHtml(meta)}</span>
         </div>
       </div>
-      <div class="api-body">${body}</div>
+      <div class="api-body">${riskPanel}${body}</div>
     </div>`
 }
 
