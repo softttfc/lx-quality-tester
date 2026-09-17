@@ -4,7 +4,25 @@ const { generateMergedCode } = require('./generator')
 const { pruneScript } = require('./pruner')
 
 /**
+ * 默认的风险对象（空/读取失败时使用）
+ * 结构与 apiLoader.js 的 analyzeRisks 返回值一致
+ */
+function emptyRisk() {
+  return {
+    level: 'clean',
+    score: 0,
+    reasons: [],
+    hasExploit: false,
+    categories: {},
+  }
+}
+
+/**
  * 批量分析音源文件，提取各自的 sources 声明
+ *
+ * 每个结果结构：
+ *   { name, path, content, sources, risk, error }
+ *   - risk 结构见 apiLoader.js 的 analyzeRisks
  */
 async function analyzeSources(files) {
   const results = []
@@ -18,6 +36,7 @@ async function analyzeSources(files) {
         path: file.path,
         content: '',
         sources: {},
+        risk: emptyRisk(),
         error: `读取失败: ${err.message}`,
       })
       continue
@@ -29,7 +48,7 @@ async function analyzeSources(files) {
       path: file.path,
       content,
       sources: r.sources || {},
-      risk: r.risk || { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} },
+      risk: r.risk || emptyRisk(),
       error: r.error || null,
     })
   }
