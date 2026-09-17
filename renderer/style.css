@@ -257,6 +257,11 @@ details summary {
   overflow: hidden;
 }
 
+/* ⭐ 被"只显示明文音源"过滤掉的卡片 */
+.api-card.filtered-out {
+  display: none;
+}
+
 .api-header {
   padding: 12px 16px;
   display: flex;
