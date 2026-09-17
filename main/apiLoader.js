@@ -24,9 +24,7 @@ function parseScriptHeader(script) {
  *
  * 分三层：
  *  1. 强规则：命中任意一条，直接判"非明文"（plainKind: 'strong'）
- *     —— 这些特征几乎不会出现在正常明文源码里，命中即高置信度
  *  2. 弱规则：加权累计评分，超过阈值判"疑似混淆"（plainKind: 'weak'）
- *     —— 特征本身可能有正当用途（打包产物、压缩变量名等），需多项叠加才认定
  *  3. 未命中任何规则 → 明文（plainKind: 'plain'）
  *
  * 返回：{ plain, plainReason, plainKind, weakScore }
@@ -68,7 +66,7 @@ function detectPlainSource(script) {
     if (s > 0) { score += s; reasons.push(reason) }
   }
 
-  // 2.1 _0x 混淆标识符密度（常见于 obfuscator.io 输出）
+  // 2.1 _0x 混淆标识符密度
   const hexIds = script.match(/_0x[a-f0-9]{3,}/gi) || []
   add(Math.min(hexIds.length, 6), `_0x 标识符 ×${hexIds.length}`)
 
@@ -82,18 +80,17 @@ function detectPlainSource(script) {
     add(4, '字符串数组旋转')
   }
 
-  // 2.4 十六进制字面量密度（相对脚本长度归一化）
+  // 2.4 十六进制字面量密度
   const hexLits = script.match(/0x[0-9a-fA-F]{2,}/g) || []
   const hexRatio = hexLits.length / Math.max(script.length / 500, 1)
   add(Math.min(Math.floor(hexRatio), 4), `十六进制字面量 ×${hexLits.length}`)
 
-  // 2.5 代理函数表（函数体仅由二元运算构成）
+  // 2.5 代理函数表
   const proxyFns = script.match(
     /['"][A-Za-z]{4,8}['"]\s*:\s*function\s*\(\s*\w+\s*\)\s*\{\s*return\s+\w+\s*[+\-*/]\s*\w+/
   )
   if (proxyFns) add(3, '代理函数表')
 
-  // 阈值：≥5 分认为疑似混淆
   if (score >= 5) {
     return {
       plain: false,
@@ -103,13 +100,166 @@ function detectPlainSource(script) {
     }
   }
 
-  // ============ 3. 明文 ============
   return {
     plain: true,
     plainReason: '',
     plainKind: 'plain',
     weakScore: score,
   }
+}
+
+// ═══════════════════════════════════════════════════════
+// 风险分析（独立维度，与 plainKind 并列）
+// ═══════════════════════════════════════════════════════
+
+// 官方/知名域名白名单：命中则不计入"非官方域名/HTTP"风险
+const TRUSTED_HOST_PATTERNS = [
+  /(^|\.)qq\.com$/,
+  /(^|\.)music\.163\.com$/,
+  /(^|\.)163\.com$/,
+  /(^|\.)kuwo\.cn$/,
+  /(^|\.)kugou\.com$/,
+  /(^|\.)migu\.cn$/,
+  /(^|\.)githubusercontent\.com$/,
+  /(^|\.)github\.com$/,
+  /(^|\.)jsdelivr\.net$/,
+  /(^|\.)gdstudio\.xyz$/,
+  /88\.lxmusic\.xn--fiqs8s$/,
+]
+
+// 公开常量白名单：社区通用的密钥常量，不计入"硬编码密钥"风险
+const KNOWN_PUBLIC_SECRETS = new Set([
+  'e82ckenh8dichen8',                           // 网易云 eapi 通用 key
+  'Hm_Iuvt_cdb524f42f0ce19b169a8071123a4700',   // 酷我 Hm_Iuvt 默认 seed
+  'lxmusic',                                     // HelloWorld 公开 key
+  'JaJ?a7Nwk_Fgj?2o:znAkst',                    // HelloWorld 公开 secret（社区共享）
+  '1888f9865338afe6d5534b35171c61a4',           // HelloWorld 公开 md5
+])
+
+/**
+ * 风险分析（与 plainKind 独立）
+ *
+ * 返回结构（契约冻结，渲染层依赖）：
+ * {
+ *   level: 'clean' | 'low' | 'medium' | 'high',
+ *   score: number,
+ *   reasons: string[],          // 摘要，供悬停 title
+ *   hasExploit: boolean,        // 供过滤使用
+ *   categories: {
+ *     hardcodedSecrets?:      { count, samples: string[] },
+ *     readsUserCredentials?:  { fields: string[] },
+ *     httpHosts?:             { count, list: string[] },
+ *     untrustedHosts?:        { count, list: string[] },
+ *     containsExploit?:       { keywords: string[] },
+ *   }
+ * }
+ */
+function analyzeRisks(script) {
+  const cleanResult = {
+    level: 'clean',
+    score: 0,
+    reasons: [],
+    hasExploit: false,
+    categories: {},
+  }
+  if (typeof script !== 'string' || !script.trim()) return cleanResult
+
+  const categories = {}
+  const reasons = []
+  let score = 0
+
+  // ── 1. 硬编码密钥 ──
+  const secretRe = /(?:api[_-]?key|secret|token|ckey|passwd|password|apikey|card[_-]?key)\s*[:=]\s*['"]([^'"]{8,})['"]/gi
+  const secrets = []
+  const seenPreview = new Set()
+  let m
+  while ((m = secretRe.exec(script)) !== null) {
+    const val = m[1]
+    if (KNOWN_PUBLIC_SECRETS.has(val)) continue
+    const preview = m[0].replace(/\s+/g, ' ').slice(0, 80)
+    if (!seenPreview.has(preview)) {
+      seenPreview.add(preview)
+      secrets.push(preview)
+    }
+  }
+  if (secrets.length) {
+    categories.hardcodedSecrets = { count: secrets.length, samples: secrets.slice(0, 8) }
+    score += Math.min(secrets.length * 5, 20)
+    reasons.push(`硬编码密钥 ×${secrets.length}`)
+  }
+
+  // ── 2. 读取用户凭据 ──
+  const credRe = /@(tx|wy|qq|kg|kw|mg)_(cookie|token)\b/g
+  const credFields = []
+  let cm
+  while ((cm = credRe.exec(script)) !== null) {
+    const field = `@${cm[1]}_${cm[2]}`
+    if (!credFields.includes(field)) credFields.push(field)
+  }
+  if (credFields.length) {
+    categories.readsUserCredentials = { fields: credFields }
+    score += 4
+    reasons.push(`读取头部凭据 ×${credFields.length}`)
+  }
+
+  // ── 3. 域名提取 ──
+  const hostRe = /(https?):\/\/([a-zA-Z0-9.\-]+)/g
+  const httpHosts = new Set()
+  const httpsHosts = new Set()
+  let hm
+  while ((hm = hostRe.exec(script)) !== null) {
+    const proto = hm[1]
+    const host = hm[2].toLowerCase().replace(/^www\./, '')
+    if (proto === 'http') httpHosts.add(host)
+    else httpsHosts.add(host)
+  }
+
+  const isTrusted = (host) => TRUSTED_HOST_PATTERNS.some((re) => re.test(host))
+
+  const untrustedHttp = [...httpHosts].filter((h) => !isTrusted(h))
+  // HTTPS 非官方域名（排除已经在 HTTP 列表里出现过的，避免重复计数）
+  const untrustedHttps = [...httpsHosts].filter(
+    (h) => !isTrusted(h) && !httpHosts.has(h)
+  )
+
+  if (untrustedHttp.length) {
+    categories.httpHosts = { count: untrustedHttp.length, list: untrustedHttp }
+    score += Math.min(untrustedHttp.length * 3, 10)
+    reasons.push(`非官方 HTTP 域名 ×${untrustedHttp.length}`)
+  }
+  if (untrustedHttps.length) {
+    categories.untrustedHosts = { count: untrustedHttps.length, list: untrustedHttps }
+    score += Math.min(untrustedHttps.length, 15)
+    reasons.push(`非官方 HTTPS 域名 ×${untrustedHttps.length}`)
+  }
+
+  // ── 4. 越权/破解 ──
+  const exploitKwRe = /(越权|exploit|crack|破解|伪造)/gi
+  const exploitKeywords = []
+  let em
+  while ((em = exploitKwRe.exec(script)) !== null) {
+    const kw = em[0]
+    if (!exploitKeywords.includes(kw)) exploitKeywords.push(kw)
+  }
+  const fakeCookieRe = /(qm_keyst|qqmusic_key|psrf_qqaccess_token)\s*[:=]\s*['"]/
+  const hasFakeCookie = fakeCookieRe.test(script)
+  const hasExploit = exploitKeywords.length > 0 || hasFakeCookie
+
+  if (hasExploit) {
+    const kws = [...exploitKeywords]
+    if (hasFakeCookie) kws.push('伪造 Cookie 特征')
+    categories.containsExploit = { keywords: kws }
+    score += 8
+    reasons.push('含越权/破解逻辑')
+  }
+
+  // ── 评分 ──
+  let level = 'clean'
+  if (score >= 15) level = 'high'
+  else if (score >= 5) level = 'medium'
+  else if (score > 0) level = 'low'
+
+  return { level, score, reasons, hasExploit, categories }
 }
 
 async function loadApiSource(scriptPath, options = {}) {
@@ -124,13 +274,20 @@ async function loadApiSource(scriptPath, options = {}) {
   } catch (err) {
     return {
       error: `读取失败: ${err.message}`,
-      info: { plain: false, plainReason: '读取失败', plainKind: 'strong', weakScore: 0 },
+      info: {
+        plain: false,
+        plainReason: '读取失败',
+        plainKind: 'strong',
+        weakScore: 0,
+        risk: { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} },
+      },
     }
   }
 
   const headerInfo = parseScriptHeader(script)
   const plainInfo = detectPlainSource(script)
-  const info = { ...headerInfo, ...plainInfo }
+  const riskInfo = analyzeRisks(script)
+  const info = { ...headerInfo, ...plainInfo, risk: riskInfo }
   const { lx, handlers } = createLxSandbox({ ...info, rawScript: script })
 
   const sandbox = {
@@ -224,4 +381,4 @@ async function loadApiSource(scriptPath, options = {}) {
   return { lx, handlers, info, initData }
 }
 
-module.exports = { loadApiSource, parseScriptHeader, detectPlainSource }
+module.exports = { loadApiSource, parseScriptHeader, detectPlainSource, analyzeRisks }
