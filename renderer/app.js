@@ -149,6 +149,11 @@ $('btnSave').addEventListener('click', async () => {
   }
 })
 
+// ⭐ "只显示明文音源"过滤开关
+$('filterPlainOnly').addEventListener('change', () => {
+  applyPlainFilter()
+})
+
 async function prepareMergeData() {
   if (!availableFiles.length) return
   $('mergeStatus').textContent = '正在分析音源...'
@@ -170,15 +175,41 @@ async function prepareMergeData() {
   }
 }
 
+/**
+ * 根据 filterPlainOnly 的勾选状态，给非明文卡片加/去 filtered-out class
+ * 过滤仅影响 UI 显示与合并可选范围，不影响已完成的测试结果
+ */
+function applyPlainFilter() {
+  const onlyPlain = $('filterPlainOnly').checked
+  document.querySelectorAll('.api-card').forEach((card) => {
+    const isPlain = card.dataset.plain === 'true'
+    if (onlyPlain && !isPlain) {
+      card.classList.add('filtered-out')
+    } else {
+      card.classList.remove('filtered-out')
+    }
+  })
+  updateMergeButtonState()
+}
+
+/**
+ * 只统计"当前未被过滤掉"的卡片中的勾选，避免隐藏卡片被计入
+ */
 function updateMergeButtonState() {
-  const anyChecked = document.querySelectorAll('.merge-checkbox:checked').length > 0
+  const anyChecked = document.querySelectorAll(
+    '.api-card:not(.filtered-out) .merge-checkbox:checked'
+  ).length > 0
   $('btnGenerateMerge').disabled = !analyzedFiles || !anyChecked
 }
 
 $('btnGenerateMerge').addEventListener('click', async () => {
   if (!analyzedFiles) return alert('请先完成测试')
 
-  const checkboxes = document.querySelectorAll('.merge-checkbox')
+  // ⭐ 只取"当前显示中（未被过滤掉）"的卡片的勾选
+  const checkboxes = document.querySelectorAll(
+    '.api-card:not(.filtered-out) .merge-checkbox'
+  )
+  // ⭐ fileIndexMap 仍基于完整的 analyzedFiles，保证生成的 selection 索引正确
   const fileIndexMap = new Map()
   analyzedFiles.forEach((f, idx) => fileIndexMap.set(f.name, idx))
 
@@ -274,7 +305,33 @@ function renderResult(report) {
   document.querySelectorAll('.merge-checkbox').forEach((cb) => {
     cb.addEventListener('change', updateMergeButtonState)
   })
-  updateMergeButtonState()
+
+  // ⭐ 渲染完成后，应用一次过滤状态（例如上一次已勾选过"只显示明文"）
+  applyPlainFilter()
+}
+
+/**
+ * 根据 info.plainKind 生成徽章 HTML
+ * - 'weak'        → ⚠️ 疑似混淆（弱规则评分超阈值）
+ * - plain === false（含 'strong' 及历史无 plainKind 数据） → 🔒 非明文
+ * - 其余（'plain'）→ 无徽章
+ */
+function renderPlainBadge(info) {
+  if (!info) return ''
+
+  if (info.plainKind === 'weak') {
+    const title = info.plainReason ? escapeHtml(info.plainReason) : '疑似混淆'
+    return `<span class="badge badge-encrypted" title="${title}">⚠️ 疑似混淆</span>`
+  }
+
+  if (info.plain === false) {
+    const title = info.plainReason
+      ? '未采用明文：' + escapeHtml(info.plainReason)
+      : '未采用明文'
+    return `<span class="badge badge-encrypted" title="${title}">🔒 非明文</span>`
+  }
+
+  return ''
 }
 
 function renderApiCard(api) {
@@ -284,9 +341,9 @@ function renderApiCard(api) {
     .filter(Boolean)
     .join(' · ')
 
-  const plainBadge = info.plain === false
-    ? `<span class="badge badge-encrypted" title="未采用明文${info.plainReason ? '：' + escapeHtml(info.plainReason) : ''}">🔒 非明文</span>`
-    : ''
+  const plainBadge = renderPlainBadge(info)
+  // ⭐ 供"只显示明文音源"过滤使用：plain !== false 视为明文
+  const isPlain = info.plain !== false
 
   let body
   if (api.error) {
@@ -298,7 +355,7 @@ function renderApiCard(api) {
   }
 
   return `
-    <div class="api-card">
+    <div class="api-card" data-plain="${isPlain ? 'true' : 'false'}" data-plain-kind="${escapeHtml(info.plainKind || '')}">
       <div class="api-header">
         <div class="api-title">
           <span class="icon">▼</span>
