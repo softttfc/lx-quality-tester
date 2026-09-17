@@ -57,7 +57,10 @@
 
       <div class="section">
         <label>音源合并</label>
-        <div class="hint">在右侧勾选要保留的平台，点击下方生成</div>
+        <label class="checkbox">
+          <input type="checkbox" id="filterPlainOnly"> 只显示明文音源
+        </label>
+        <div class="hint">在右侧勾选要保留的平台，点击下方生成。<br>过滤开启时，非明文/疑似混淆音源不可参与合并。</div>
         <button id="btnGenerateMerge" class="primary" disabled>🔀 生成合并音源</button>
         <div id="mergeStatus" class="search-status"></div>
       </div>
