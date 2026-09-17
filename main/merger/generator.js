@@ -126,6 +126,35 @@ ${files.map((f, i) => {
   const EVENT_NAMES = __origin_lx.EVENT_NAMES
 
   // ═══════════════════════════════════════════════════════
+  // 【方案 B】异步错误记录器
+  //   - 目的：让音源内部产生的 unhandledRejection（例如某音源末尾
+  //     直接 checkLatestVersion().then(...) 而没有 .catch()）在控制台
+  //     可见，便于排查。
+  //   - 注意：这里**不调用** e.preventDefault()，不阻止宿主（LX Music）
+  //     自身对 unhandledRejection 的处理逻辑。是否弹窗、是否视为
+  //     音源加载失败，仍然由 LX Music 客户端自行决定。
+  // ═══════════════════════════════════════════════════════
+  ;(function () {
+    var __onUnhandled__ = function (e) {
+      try {
+        var msg = (e && e.reason && e.reason.message) || (e && e.message) || String(e)
+        console.warn('[合并音源] 捕获到未处理的异步错误（不阻止宿主处理）:', msg)
+      } catch (_) {}
+      // ⚠️ 不调用 e.preventDefault()，让 LX Music 客户端保持原有行为
+    }
+    try {
+      if (typeof process !== 'undefined' && typeof process.on === 'function') {
+        process.on('unhandledRejection', __onUnhandled__)
+      }
+    } catch (_) {}
+    try {
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('unhandledrejection', __onUnhandled__)
+      }
+    } catch (_) {}
+  })()
+
+  // ═══════════════════════════════════════════════════════
   // 平台优先级（已按上次测试结果静态排序）
   // ═══════════════════════════════════════════════════════
   const PLATFORM_PRIORITY = ${JSON.stringify(priorityMap, null, 2)}
@@ -152,19 +181,33 @@ ${files.map((f, i) => {
   // ═══════════════════════════════════════════════════════
   ;(function () {
     const __fileIdx = ${i}
-    const __lx_proxy__ = Object.assign({}, __origin_lx)
+    try {
+      const __lx_proxy__ = Object.assign({}, __origin_lx)
 
-    __lx_proxy__.on = function (event, handler) {
-      if (event === EVENT_NAMES.request) {
-        __handlers__.push({ fileIdx: __fileIdx, handler: handler })
+      __lx_proxy__.on = function (event, handler) {
+        if (event === EVENT_NAMES.request) {
+          __handlers__.push({ fileIdx: __fileIdx, handler: handler })
+        }
       }
+
+      // ⭐ 关键修复（改动 1）：这里必须带分号
+      // 否则若原始代码以 '(' / '[' / '+' / '-' 开头（webpack 打包产物常见），
+      // 会触发 ASI 陷阱，把两段代码合并成一个调用表达式，
+      // 导致音源内部拿到的是真实的 lx.send，从而提前/重复发 inited 事件。
+      __lx_proxy__.send = function () {};
+
+      // ═════════════ 原始代码开始 ═════════════
+${replaced.split('\n').map((line) => '      ' + line).join('\n')}
+      // ═════════════ 原始代码结束 ═════════════
+    } catch (__e) {
+      // 改动 2：单个音源的同步加载异常不应炸掉整个合并文件
+      try {
+        console.error(
+          '[合并音源] 音源[' + (__fileIdx + 1) + '] 加载异常:',
+          (__e && __e.message) ? __e.message : __e
+        )
+      } catch (_) {}
     }
-
-    __lx_proxy__.send = function () {}
-
-    // ═════════════ 原始代码开始 ═════════════
-${replaced.split('\n').map((line) => '    ' + line).join('\n')}
-    // ═════════════ 原始代码结束 ═════════════
   })()
 `
   }
