@@ -55,12 +55,41 @@
         <button id="btnSave" disabled>💾 导出报告</button>
       </div>
 
+      <!-- ⭐ 新增：风险汇总 -->
+      <div class="section">
+        <label>风险汇总</label>
+        <div id="riskSummary" class="risk-summary">
+          <div class="risk-stat" data-level="high">
+            <span class="num" id="riskCountHigh">0</span>
+            <span class="lbl">🔴 高</span>
+          </div>
+          <div class="risk-stat" data-level="medium">
+            <span class="num" id="riskCountMedium">0</span>
+            <span class="lbl">🟡 中</span>
+          </div>
+          <div class="risk-stat" data-level="low">
+            <span class="num" id="riskCountLow">0</span>
+            <span class="lbl">🟢 低</span>
+          </div>
+          <div class="risk-stat" data-level="clean">
+            <span class="num" id="riskCountClean">0</span>
+            <span class="lbl">⚪ 无</span>
+          </div>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" id="filterLowRiskOnly"> 只看低风险（隐藏中/高风险）
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="filterNoExploit"> 隐藏含越权/破解音源
+        </label>
+      </div>
+
       <div class="section">
         <label>音源合并</label>
         <label class="checkbox">
           <input type="checkbox" id="filterPlainOnly"> 只显示明文音源
         </label>
-        <div class="hint">在右侧勾选要保留的平台，点击下方生成。<br>过滤开启时，非明文/疑似混淆音源不可参与合并。</div>
+        <div class="hint">在右侧勾选要保留的平台，点击下方生成。<br>过滤开启时，被隐藏的音源不可参与合并。</div>
         <button id="btnGenerateMerge" class="primary" disabled>🔀 生成合并音源</button>
         <div id="mergeStatus" class="search-status"></div>
       </div>
