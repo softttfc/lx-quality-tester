@@ -29,6 +29,7 @@ async function analyzeSources(files) {
       path: file.path,
       content,
       sources: r.sources || {},
+      risk: r.risk || { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} },
       error: r.error || null,
     })
   }
