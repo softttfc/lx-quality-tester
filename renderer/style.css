@@ -1,3 +1,16 @@
+:root {
+  /* 风险等级色板 */
+  --risk-high-bg: #7a1f1f;
+  --risk-high-fg: #ffbdbd;
+  --risk-high-border: #b33333;
+  --risk-medium-bg: #7a5a1f;
+  --risk-medium-fg: #ffdda0;
+  --risk-medium-border: #b38033;
+  --risk-low-bg: #1f5a3a;
+  --risk-low-fg: #b8ffd9;
+  --risk-low-border: #33a366;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -257,7 +270,7 @@ details summary {
   overflow: hidden;
 }
 
-/* ⭐ 被"只显示明文音源"过滤掉的卡片 */
+/* ⭐ 被"只显示明文音源 / 只看低风险 / 隐藏越权"过滤掉的卡片 */
 .api-card.filtered-out {
   display: none;
 }
@@ -306,6 +319,23 @@ details summary {
   border: 1px solid #b35c00;
 }
 
+/* ⭐ 风险徽章 */
+.badge-risk-high {
+  background: var(--risk-high-bg);
+  color: var(--risk-high-fg);
+  border: 1px solid var(--risk-high-border);
+}
+.badge-risk-medium {
+  background: var(--risk-medium-bg);
+  color: var(--risk-medium-fg);
+  border: 1px solid var(--risk-medium-border);
+}
+.badge-risk-low {
+  background: var(--risk-low-bg);
+  color: var(--risk-low-fg);
+  border: 1px solid var(--risk-low-border);
+}
+
 .api-body {
   border-top: 1px solid #f0f0f0;
   padding: 12px 16px;
@@ -315,6 +345,139 @@ details summary {
   color: #d43f3f;
   font-size: 12px;
   padding: 8px 0;
+}
+
+/* ⭐ 风险面板（第 3 层） */
+.risk-panel {
+  margin-bottom: 12px;
+  border: 1px solid #f0e0c0;
+  border-radius: 6px;
+  background: #fffdf5;
+  overflow: hidden;
+}
+.risk-panel.risk-high {
+  border-color: #f0c0c0;
+  background: #fff8f8;
+}
+.risk-panel.risk-medium {
+  border-color: #f0dfa0;
+  background: #fffcf0;
+}
+.risk-panel.risk-low {
+  border-color: #c0e8c8;
+  background: #f6fff8;
+}
+.risk-panel-summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  list-style: none;
+}
+.risk-panel-summary::-webkit-details-marker {
+  display: none;
+}
+.risk-panel-summary::before {
+  content: '▼';
+  font-size: 10px;
+  color: #999;
+  margin-right: 4px;
+}
+.risk-panel:not([open]) > .risk-panel-summary::before {
+  content: '▶';
+}
+.risk-panel-hint {
+  font-size: 11px;
+  color: #999;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.risk-panel-body {
+  padding: 4px 16px 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+.risk-item {
+  margin-bottom: 10px;
+}
+.risk-item:last-child {
+  margin-bottom: 0;
+}
+.risk-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 4px;
+  color: #444;
+}
+.risk-item ul {
+  list-style: none;
+  padding-left: 0;
+}
+.risk-item li {
+  font-size: 11px;
+  color: #666;
+  padding: 2px 0;
+  font-family: Consolas, monospace;
+  word-break: break-all;
+}
+.risk-item code {
+  background: #f5f5f5;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+/* ⭐ 侧边栏风险汇总（第 4 层） */
+.risk-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.risk-stat {
+  text-align: center;
+  padding: 6px 4px;
+  background: #f9f9f9;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.risk-stat[data-level="high"] {
+  background: #fff0f0;
+  border-color: #ffd0d0;
+}
+.risk-stat[data-level="medium"] {
+  background: #fff8e6;
+  border-color: #ffe4b3;
+}
+.risk-stat[data-level="low"] {
+  background: #f0fff4;
+  border-color: #c8ecd0;
+}
+.risk-stat .num {
+  display: block;
+  font-size: 18px;
+  font-weight: 600;
+  color: #333;
+}
+.risk-stat[data-level="high"] .num {
+  color: #d43f3f;
+}
+.risk-stat[data-level="medium"] .num {
+  color: #cc8800;
+}
+.risk-stat[data-level="low"] .num {
+  color: #33a366;
+}
+.risk-stat .lbl {
+  display: block;
+  font-size: 10px;
+  color: #999;
+  margin-top: 2px;
 }
 
 .platform {
