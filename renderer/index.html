@@ -55,7 +55,6 @@
         <button id="btnSave" disabled>💾 导出报告</button>
       </div>
 
-      <!-- ⭐ 新增：风险汇总 -->
       <div class="section">
         <label>风险汇总</label>
         <div id="riskSummary" class="risk-summary">
@@ -82,6 +81,15 @@
         <label class="checkbox">
           <input type="checkbox" id="filterNoExploit"> 隐藏含越权/破解音源
         </label>
+      </div>
+
+      <!-- ⭐ v1.6：后端检测 -->
+      <div class="section">
+        <label>后端检测</label>
+        <div class="hint">检测每个平台的后端（域名）连通性与音质。勾选要<b>保留</b>的后端，未勾选的将在合并时被屏蔽。</div>
+        <button id="btnTestBackends" class="secondary">🎯 检测所有平台后端</button>
+        <div id="backendStatus" class="search-status"></div>
+        <div id="backendSummary" class="backend-summary" style="display:none"></div>
       </div>
 
       <div class="section">
