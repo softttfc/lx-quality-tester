@@ -14,7 +14,7 @@ const MEDIA_HOST_PATTERNS = [
   /(^|\.)lxmusic\.xn--fiqs8s$/,
 ]
 
-// ⭐ 方案 A 新增：官方 API 域名白名单
+// ⭐ 方案 A：官方 API 域名白名单
 // 这些域名的请求是"后端 API 调用"，不是"媒体资源下载"
 // 它们和官方媒体 CDN 共享顶级域，但角色完全不同，必须优先识别
 const OFFICIAL_API_PATTERNS = [
@@ -32,7 +32,7 @@ const OFFICIAL_API_PATTERNS = [
   /^(app\.c\.nf|jadeite|music)\.migu\.cn$/,
 ]
 
-// 跨域前置/签名服务白名单：检测时永远放行
+// 跨域前置/签名服务白名单：检测时永远放行，且不视为候选后端
 const ALWAYS_ALLOW_PATTERNS = [
   /(^|\.)github\.com$/,
   /(^|\.)githubusercontent\.com$/,
@@ -69,9 +69,7 @@ function qualityIndex(q) {
 /**
  * 一次带日志记录/过滤的单次请求
  *
- * ⭐ v1.7 扩展：新增 extraOptions 参数
- *   - extraOptions.blockedHosts：黑名单模式（拒绝列表内域名，其余放行）
- *   - 若同时提供 allowedHosts 和 blockedHosts，先白名单后黑名单
+ * extraOptions 保留，用于将来可能的黑名单模式调用，当前 Phase 2 只使用白名单
  */
 async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeout, extraOptions = {}) {
   // ⭐ 构造 requestFilter：优先黑名单，其次白名单
@@ -256,14 +254,19 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
 
     console.log(`[backendTester] ${file} / ${platform}: 扫描 ${probeQualities.length} 个音质 (${probeQualities.join(', ')})`)
 
-    const hostMap = new Map()  // host -> { host, qualities: Set, url, quality, usable, error }
+    const hostMap = new Map()          // 候选后端：host -> { host, qualities: Set, ... }
+    const allSeenHosts = new Set()     // ⭐ 新增：观察到的全部请求域名（用于 Phase 2 计算辅助域名）
 
     // Phase 1：正常跑，收集请求主机
     for (const quality of probeQualities) {
       onProgress({ type: 'backend-scan', file, platform, quality })
       const normal = await runOnce(scriptPath, song, platform, quality, null, timeout)
       for (const host of (normal.requestHosts || [])) {
+        // ⭐ 记录所有观察到的域名（包括媒体、辅助域名）
+        allSeenHosts.add(host)
+        // 候选后端判定：排除媒体域名 + 排除公共辅助服务
         if (isMediaHost(host)) continue
+        if (isAlwaysAllow(host)) continue
         if (!hostMap.has(host)) {
           hostMap.set(host, { host, qualities: new Set(), usable: null, quality: null, url: null, error: null })
         }
@@ -271,27 +274,31 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
       }
     }
 
-    // Phase 2：对每个主机做隔离测试
-    // ⭐ v1.7：改用黑名单模式
-    //   - 只拒绝"其他候选后端"
-    //   - 媒体 CDN、签名服务、前置 Token 服务全部放行
-    //   - 这样两阶段后端（官方 API + CDN）才能完整跑通
+    // Phase 2：对每个候选后端做隔离测试
+    // ⭐ v1.8：组合白名单模式
+    //   - 白名单 = 当前后端 + 所有"非候选后端"的域名（辅助域名：媒体 CDN、签名服务、前置 API 等）
+    //   - 这样当前后端能完成"两阶段请求"和依赖的辅助请求
+    //   - 同时其他候选后端被精确拒绝
     const hostList = [...hostMap.values()]
-    const allBackendHosts = hostList.map((e) => e.host)
+    const backendHostSet = new Set(hostList.map((e) => e.host))
+
+    // ⭐ 辅助域名：观察到了但不属于候选后端的域名
+    const helperHosts = [...allSeenHosts].filter((h) => !backendHostSet.has(h))
+
+    console.log(`[backendTester] ${file} / ${platform}: 候选后端 ${hostList.length} 个，辅助域名 ${helperHosts.length} 个`)
 
     for (let i = 0; i < hostList.length; i++) {
       const entry = hostList[i]
       const testQuality = [...entry.qualities].sort((a, b) => qualityIndex(a) - qualityIndex(b))[0]
       onProgress({ type: 'backend-host-test', file, platform, host: entry.host, quality: testQuality })
 
-      // ⭐ 黑名单：拒绝所有"其他候选后端"，其余全放行
-      const otherBackendHosts = allBackendHosts.filter((h) => h !== entry.host)
+      // ⭐ 组合白名单：当前后端 + 辅助域名
+      const allowSet = new Set([entry.host, ...helperHosts])
 
       const isolated = await runOnce(
         scriptPath, song, platform, testQuality,
-        null,                              // 不使用白名单
-        timeout,
-        { blockedHosts: otherBackendHosts }
+        [...allowSet],
+        timeout
       )
 
       if (!isolated.url) {
