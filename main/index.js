@@ -4,6 +4,7 @@ const fs = require('fs')
 const { testApiSource } = require('./tester')
 const { searchAllPlatforms } = require('./searchService')
 const { analyzeSources, mergeSources } = require('./merger')
+const { testBackends } = require('./backendTester')
 
 let mainWindow = null
 
@@ -93,7 +94,6 @@ ipcMain.handle('save-report', async (event, content) => {
   return { ok: false }
 })
 
-// ⭐ 分析音源
 ipcMain.handle('analyze-sources', async (event, files) => {
   try {
     return await analyzeSources(files)
@@ -102,10 +102,37 @@ ipcMain.handle('analyze-sources', async (event, files) => {
   }
 })
 
-// ⭐ 生成合并音源（新增 report 参数）
-ipcMain.handle('merge-sources', async (event, { files, selection, report }) => {
+// ⭐ v1.6：后端检测
+ipcMain.handle('test-backends', async (event, { files, song, options }) => {
   try {
-    const code = mergeSources(files, selection, report)
+    const results = []
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i]
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('backend-progress', {
+          type: 'file-progress',
+          current: i + 1,
+          total: files.length,
+          file: f.name,
+        })
+      }
+      const r = await testBackends(f.path, song, options || {}, (p) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('backend-progress', p)
+        }
+      })
+      results.push(r)
+    }
+    return { ok: true, results }
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
+})
+
+// ⭐ v1.6：merge-sources 接受 blockedHosts
+ipcMain.handle('merge-sources', async (event, { files, selection, report, blockedHosts }) => {
+  try {
+    const code = mergeSources(files, selection, report, { blockedHosts: blockedHosts || [] })
     const r = await dialog.showSaveDialog({
       title: '保存合并音源',
       defaultPath: `merged-source-${Date.now()}.js`,
