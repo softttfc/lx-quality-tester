@@ -258,15 +258,26 @@ function renderBackendSummary(results) {
   `
 }
 
+/**
+ * 把后端面板注入到对应的 API 卡片内。
+ * 若右侧还没有任何 API 卡片（未运行音质测试），则独立渲染。
+ */
 function injectBackendPanels(results) {
-  // 移除旧面板
+  // 清除旧面板（两种形式都要清）
   document.querySelectorAll('.backend-panel').forEach((el) => el.remove())
+  document.querySelectorAll('.standalone-backend-card').forEach((el) => el.remove())
+
+  let anyInjected = false
 
   for (const r of results) {
-    const card = [...document.querySelectorAll('.api-card')].find((c) => {
-      const title = c.querySelector('.api-title')?.textContent || ''
-      return title.includes(r.file)
-    })
+    // ⭐ 优先用 data-file 精确匹配；退化到标题文本匹配
+    let card = document.querySelector(`.api-card[data-file="${cssEscape(r.file)}"]`)
+    if (!card) {
+      card = [...document.querySelectorAll('.api-card')].find((c) => {
+        const title = c.querySelector('.api-title')?.textContent || ''
+        return title.includes(r.file)
+      })
+    }
     if (!card) continue
 
     const platformsWithBackends = Object.entries(r.platforms || {}).filter(
@@ -288,12 +299,85 @@ function injectBackendPanels(results) {
       </details>`
 
     body.insertAdjacentHTML('afterbegin', panelHtml)
+    anyInjected = true
   }
 
+  // ⭐ 若一个卡片都没匹配到（例如还没跑"开始测试"），独立渲染
+  if (!anyInjected) {
+    renderBackendPanelsStandalone(results)
+  }
+
+  bindBackendPanelEvents()
+  updateBackendSummary()
+}
+
+/**
+ * 无匹配卡片时，独立把后端清单渲染到 #results
+ */
+function renderBackendPanelsStandalone(results) {
+  const container = document.getElementById('results')
+  if (!container) return
+
+  const cardsHtml = results
+    .map((r) => {
+      const platformsWithBackends = Object.entries(r.platforms || {}).filter(
+        ([, hosts]) => hosts.length > 0
+      )
+      if (platformsWithBackends.length === 0) return ''
+      return `
+        <div class="api-card standalone-backend-card" data-file="${escapeHtml(r.file)}">
+          <div class="api-header">
+            <div class="api-title">
+              <span class="icon">▼</span>
+              <span>🎯 ${escapeHtml(r.file)}</span>
+              <span class="api-meta">后端清单（未运行音质测试）</span>
+            </div>
+          </div>
+          <div class="api-body">
+            <details class="backend-panel" open>
+              <summary class="backend-panel-summary">
+                <span>🎯 后端清单（${platformsWithBackends.length} 个平台）</span>
+              </summary>
+              <div class="backend-panel-body">
+                ${platformsWithBackends.map(([platform, hosts]) => renderBackendPlatform(r.file, platform, hosts)).join('')}
+              </div>
+            </details>
+          </div>
+        </div>`
+    })
+    .filter(Boolean)
+    .join('')
+
+  if (!cardsHtml) {
+    // 完全没有后端信息，也不清空（避免把已有结果清掉）
+    return
+  }
+  container.innerHTML = cardsHtml
+
+  // 绑定折叠事件
+  container.querySelectorAll('.api-header').forEach((h) => {
+    h.addEventListener('click', () => {
+      const body = h.parentElement.querySelector('.api-body')
+      const icon = h.querySelector('.icon')
+      const hidden = body.style.display === 'none'
+      body.style.display = hidden ? 'block' : 'none'
+      icon.textContent = hidden ? '▼' : '▶'
+    })
+  })
+}
+
+/**
+ * 统一绑定后端面板事件（防重复绑定）
+ */
+function bindBackendPanelEvents() {
   document.querySelectorAll('.backend-host-cb').forEach((cb) => {
+    if (cb.dataset.bound === '1') return
+    cb.dataset.bound = '1'
     cb.addEventListener('change', updateBackendSummary)
   })
   document.querySelectorAll('[data-action="all-usable"]').forEach((btn) => {
+    if (btn.dataset.bound === '1') return
+    btn.dataset.bound = '1'
     btn.addEventListener('click', (e) => {
       e.preventDefault()
       const file = btn.dataset.file
@@ -306,6 +390,8 @@ function injectBackendPanels(results) {
     })
   })
   document.querySelectorAll('[data-action="all"]').forEach((btn) => {
+    if (btn.dataset.bound === '1') return
+    btn.dataset.bound = '1'
     btn.addEventListener('click', (e) => {
       e.preventDefault()
       const file = btn.dataset.file
@@ -317,6 +403,8 @@ function injectBackendPanels(results) {
     })
   })
   document.querySelectorAll('[data-action="none"]').forEach((btn) => {
+    if (btn.dataset.bound === '1') return
+    btn.dataset.bound = '1'
     btn.addEventListener('click', (e) => {
       e.preventDefault()
       const file = btn.dataset.file
@@ -327,8 +415,6 @@ function injectBackendPanels(results) {
       updateBackendSummary()
     })
   })
-
-  updateBackendSummary()
 }
 
 function renderBackendPlatform(file, platform, hosts) {
@@ -513,7 +599,8 @@ function renderRiskPanel(info) {
 
 function updateRiskSummary() {
   const counts = { high: 0, medium: 0, low: 0, clean: 0 }
-  document.querySelectorAll('.api-card').forEach((card) => {
+  // ⭐ 只统计真正的 API 卡片，跳过 standalone 后端卡片
+  document.querySelectorAll('.api-card:not(.standalone-backend-card)').forEach((card) => {
     const level = card.dataset.riskLevel || 'clean'
     if (counts[level] !== undefined) counts[level]++
     else counts.clean++
@@ -529,7 +616,8 @@ function applyAllFilters() {
   const lowRiskOnly = $('filterLowRiskOnly').checked
   const noExploit = $('filterNoExploit').checked
 
-  document.querySelectorAll('.api-card').forEach((card) => {
+  // ⭐ 跳过 standalone-backend-card（它们没有明文/风险标签）
+  document.querySelectorAll('.api-card:not(.standalone-backend-card)').forEach((card) => {
     const isPlain = card.dataset.plain === 'true'
     const riskLevel = card.dataset.riskLevel || 'clean'
     const hasExploit = card.dataset.hasExploit === 'true'
@@ -662,6 +750,11 @@ function renderResult(report) {
 
   updateRiskSummary()
   applyAllFilters()
+
+  // ⭐ 若之前已检测过后端，重新把面板注入新渲染的卡片
+  if (backendResults && backendResults.length) {
+    injectBackendPanels(backendResults)
+  }
 }
 
 function renderPlainBadge(info) {
@@ -708,6 +801,7 @@ function renderApiCard(api) {
 
   return `
     <div class="api-card"
+         data-file="${escapeHtml(api.file)}"
          data-plain="${isPlain ? 'true' : 'false'}"
          data-plain-kind="${escapeHtml(info.plainKind || '')}"
          data-risk-level="${riskLevel}"
