@@ -19,27 +19,11 @@ function parseScriptHeader(script) {
   }
 }
 
-/**
- * 判定音源脚本是否采用明文
- *
- * 分三层：
- *  1. 强规则：命中任意一条，直接判"非明文"（plainKind: 'strong'）
- *  2. 弱规则：加权累计评分，超过阈值判"疑似混淆"（plainKind: 'weak'）
- *  3. 未命中任何规则 → 明文（plainKind: 'plain'）
- *
- * 返回：{ plain, plainReason, plainKind, weakScore }
- */
 function detectPlainSource(script) {
   if (typeof script !== 'string' || !script.trim()) {
-    return {
-      plain: false,
-      plainReason: '空文件',
-      plainKind: 'strong',
-      weakScore: 0,
-    }
+    return { plain: false, plainReason: '空文件', plainKind: 'strong', weakScore: 0 }
   }
 
-  // ============ 1. 强规则（命中即判非明文） ============
   const strongRules = [
     { re: /\beval\s*\(/,              reason: '包含 eval 动态执行' },
     { re: /\bnew\s+Function\s*\(/,    reason: '包含 Function 构造' },
@@ -50,42 +34,27 @@ function detectPlainSource(script) {
   ]
   for (const { re, reason } of strongRules) {
     if (re.test(script)) {
-      return {
-        plain: false,
-        plainReason: reason,
-        plainKind: 'strong',
-        weakScore: 0,
-      }
+      return { plain: false, plainReason: reason, plainKind: 'strong', weakScore: 0 }
     }
   }
 
-  // ============ 2. 弱规则（加权评分） ============
   let score = 0
   const reasons = []
-  const add = (s, reason) => {
-    if (s > 0) { score += s; reasons.push(reason) }
-  }
+  const add = (s, reason) => { if (s > 0) { score += s; reasons.push(reason) } }
 
-  // 2.1 _0x 混淆标识符密度
   const hexIds = script.match(/_0x[a-f0-9]{3,}/gi) || []
   add(Math.min(hexIds.length, 6), `_0x 标识符 ×${hexIds.length}`)
 
-  // 2.2 while(!![]) 字符串数组旋转
   if (/while\s*\(\s*!!\s*\[\s*\]\s*\)/.test(script)) {
     add(4, 'while(!![]) 旋转循环')
   }
-
-  // 2.3 push/shift 数组轮转
   if (/\[\s*['"]push['"]\s*\]\s*\(\s*[A-Za-z_$][\w$]*\s*\[\s*['"]shift['"]\s*\]/.test(script)) {
     add(4, '字符串数组旋转')
   }
-
-  // 2.4 十六进制字面量密度
   const hexLits = script.match(/0x[0-9a-fA-F]{2,}/g) || []
   const hexRatio = hexLits.length / Math.max(script.length / 500, 1)
   add(Math.min(Math.floor(hexRatio), 4), `十六进制字面量 ×${hexLits.length}`)
 
-  // 2.5 代理函数表
   const proxyFns = script.match(
     /['"][A-Za-z]{4,8}['"]\s*:\s*function\s*\(\s*\w+\s*\)\s*\{\s*return\s+\w+\s*[+\-*/]\s*\w+/
   )
@@ -100,19 +69,13 @@ function detectPlainSource(script) {
     }
   }
 
-  return {
-    plain: true,
-    plainReason: '',
-    plainKind: 'plain',
-    weakScore: score,
-  }
+  return { plain: true, plainReason: '', plainKind: 'plain', weakScore: score }
 }
 
 // ═══════════════════════════════════════════════════════
-// 风险分析（独立维度，与 plainKind 并列）
+// 风险分析
 // ═══════════════════════════════════════════════════════
 
-// 官方/知名域名白名单：命中则不计入"非官方域名/HTTP"风险
 const TRUSTED_HOST_PATTERNS = [
   /(^|\.)qq\.com$/,
   /(^|\.)music\.163\.com$/,
@@ -127,48 +90,22 @@ const TRUSTED_HOST_PATTERNS = [
   /88\.lxmusic\.xn--fiqs8s$/,
 ]
 
-// 公开常量白名单：社区通用的密钥常量，不计入"硬编码密钥"风险
 const KNOWN_PUBLIC_SECRETS = new Set([
-  'e82ckenh8dichen8',                           // 网易云 eapi 通用 key
-  'Hm_Iuvt_cdb524f42f0ce19b169a8071123a4700',   // 酷我 Hm_Iuvt 默认 seed
-  'lxmusic',                                     // HelloWorld 公开 key
-  'JaJ?a7Nwk_Fgj?2o:znAkst',                    // HelloWorld 公开 secret（社区共享）
-  '1888f9865338afe6d5534b35171c61a4',           // HelloWorld 公开 md5
+  'e82ckenh8dichen8',
+  'Hm_Iuvt_cdb524f42f0ce19b169a8071123a4700',
+  'lxmusic',
+  'JaJ?a7Nwk_Fgj?2o:znAkst',
+  '1888f9865338afe6d5534b35171c61a4',
 ])
 
-/**
- * 风险分析（与 plainKind 独立）
- *
- * 返回结构（契约冻结，渲染层依赖）：
- * {
- *   level: 'clean' | 'low' | 'medium' | 'high',
- *   score: number,
- *   reasons: string[],          // 摘要，供悬停 title
- *   hasExploit: boolean,        // 供过滤使用
- *   categories: {
- *     hardcodedSecrets?:      { count, samples: string[] },
- *     readsUserCredentials?:  { fields: string[] },
- *     httpHosts?:             { count, list: string[] },
- *     untrustedHosts?:        { count, list: string[] },
- *     containsExploit?:       { keywords: string[] },
- *   }
- * }
- */
 function analyzeRisks(script) {
-  const cleanResult = {
-    level: 'clean',
-    score: 0,
-    reasons: [],
-    hasExploit: false,
-    categories: {},
-  }
+  const cleanResult = { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} }
   if (typeof script !== 'string' || !script.trim()) return cleanResult
 
   const categories = {}
   const reasons = []
   let score = 0
 
-  // ── 1. 硬编码密钥 ──
   const secretRe = /(?:api[_-]?key|secret|token|ckey|passwd|password|apikey|card[_-]?key)\s*[:=]\s*['"]([^'"]{8,})['"]/gi
   const secrets = []
   const seenPreview = new Set()
@@ -188,7 +125,6 @@ function analyzeRisks(script) {
     reasons.push(`硬编码密钥 ×${secrets.length}`)
   }
 
-  // ── 2. 读取用户凭据 ──
   const credRe = /@(tx|wy|qq|kg|kw|mg)_(cookie|token)\b/g
   const credFields = []
   let cm
@@ -202,7 +138,6 @@ function analyzeRisks(script) {
     reasons.push(`读取头部凭据 ×${credFields.length}`)
   }
 
-  // ── 3. 域名提取 ──
   const hostRe = /(https?):\/\/([a-zA-Z0-9.\-]+)/g
   const httpHosts = new Set()
   const httpsHosts = new Set()
@@ -217,10 +152,7 @@ function analyzeRisks(script) {
   const isTrusted = (host) => TRUSTED_HOST_PATTERNS.some((re) => re.test(host))
 
   const untrustedHttp = [...httpHosts].filter((h) => !isTrusted(h))
-  // HTTPS 非官方域名（排除已经在 HTTP 列表里出现过的，避免重复计数）
-  const untrustedHttps = [...httpsHosts].filter(
-    (h) => !isTrusted(h) && !httpHosts.has(h)
-  )
+  const untrustedHttps = [...httpsHosts].filter((h) => !isTrusted(h) && !httpHosts.has(h))
 
   if (untrustedHttp.length) {
     categories.httpHosts = { count: untrustedHttp.length, list: untrustedHttp }
@@ -233,7 +165,6 @@ function analyzeRisks(script) {
     reasons.push(`非官方 HTTPS 域名 ×${untrustedHttps.length}`)
   }
 
-  // ── 4. 越权/破解 ──
   const exploitKwRe = /(越权|exploit|crack|破解|伪造)/gi
   const exploitKeywords = []
   let em
@@ -253,7 +184,6 @@ function analyzeRisks(script) {
     reasons.push('含越权/破解逻辑')
   }
 
-  // ── 评分 ──
   let level = 'clean'
   if (score >= 15) level = 'high'
   else if (score >= 5) level = 'medium'
@@ -264,8 +194,10 @@ function analyzeRisks(script) {
 
 async function loadApiSource(scriptPath, options = {}) {
   const {
-    initTimeout = 15000,      // 等待 inited 事件的超时（ms）
-    scriptTimeout = 30000,    // vm 执行脚本的超时（ms）
+    initTimeout = 15000,
+    scriptTimeout = 30000,
+    requestFilter = null,        // ⭐ v1.6 新增
+    logRequests = false,         // ⭐ v1.6 新增
   } = options
 
   let script
@@ -281,6 +213,7 @@ async function loadApiSource(scriptPath, options = {}) {
         weakScore: 0,
         risk: { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} },
       },
+      getRequestLog: () => [],
     }
   }
 
@@ -288,7 +221,12 @@ async function loadApiSource(scriptPath, options = {}) {
   const plainInfo = detectPlainSource(script)
   const riskInfo = analyzeRisks(script)
   const info = { ...headerInfo, ...plainInfo, risk: riskInfo }
-  const { lx, handlers } = createLxSandbox({ ...info, rawScript: script })
+
+  // ⭐ v1.6：透传 requestFilter 和 logRequests
+  const { lx, handlers, getRequestLog } = createLxSandbox(
+    { ...info, rawScript: script },
+    { requestFilter, logRequests }
+  )
 
   const sandbox = {
     lx,
@@ -354,10 +292,9 @@ async function loadApiSource(scriptPath, options = {}) {
     vm.createContext(sandbox)
     vm.runInContext(script, sandbox, { timeout: scriptTimeout, filename: scriptPath })
   } catch (err) {
-    return { error: `执行失败: ${err.message}`, info }
+    return { error: `执行失败: ${err.message}`, info, getRequestLog }
   }
 
-  // ⭐ 关键修正：异步等待 inited 事件（有些音源的 send(inited) 在异步回调中）
   const startTime = Date.now()
   while (!handlers.inited && Date.now() - startTime < initTimeout) {
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -367,18 +304,19 @@ async function loadApiSource(scriptPath, options = {}) {
     return {
       error: `未触发 inited 事件（等待 ${initTimeout}ms 超时，可能音源内部抛异常）`,
       info,
+      getRequestLog,
     }
   }
   const initData = handlers.inited
   if (!initData.sources || typeof initData.sources !== 'object') {
-    return { error: 'inited 事件未声明 sources', info }
+    return { error: 'inited 事件未声明 sources', info, getRequestLog }
   }
   const sourceCount = Object.keys(initData.sources).length
   if (sourceCount === 0) {
-    return { error: 'inited 事件声明的 sources 为空（可能音源只声明了不支持的平台）', info }
+    return { error: 'inited 事件声明的 sources 为空', info, getRequestLog }
   }
 
-  return { lx, handlers, info, initData }
+  return { lx, handlers, info, initData, getRequestLog }
 }
 
 module.exports = { loadApiSource, parseScriptHeader, detectPlainSource, analyzeRisks }
