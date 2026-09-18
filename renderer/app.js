@@ -6,6 +6,8 @@ let lastReport = null
 let analyzedFiles = null
 let unsubscribe = null
 let selectedIds = { wy: null, tx: null, kw: null, kg: null, mg: null }
+let backendResults = null
+let backendUnsubscribe = null
 
 $('btnSelectDir').addEventListener('click', async () => {
   const dir = await window.api.selectSourcesDir()
@@ -140,7 +142,7 @@ $('btnSave').addEventListener('click', async () => {
   const data = {
     ...lastReport,
     tool: 'lx-quality-tester',
-    version: '1.5.0',
+    version: '1.6.0',
     exportedAt: new Date().toISOString(),
   }
   const r = await window.api.saveReport(JSON.stringify(data, null, 2))
@@ -149,7 +151,6 @@ $('btnSave').addEventListener('click', async () => {
   }
 })
 
-// ⭐ 三个过滤开关统一走 applyAllFilters
 $('filterPlainOnly').addEventListener('change', applyAllFilters)
 $('filterLowRiskOnly').addEventListener('change', applyAllFilters)
 $('filterNoExploit').addEventListener('change', applyAllFilters)
@@ -176,7 +177,245 @@ async function prepareMergeData() {
 }
 
 // ═══════════════════════════════════════════════════════
-// 风险提示模块（v1.5 新增）
+// 后端检测（v1.6 新增）
+// ═══════════════════════════════════════════════════════
+
+$('btnTestBackends').addEventListener('click', async () => {
+  if (!availableFiles.length) return alert('请先选择音源目录')
+  const songName = $('songName').value.trim()
+  if (!songName) return alert('请先填写歌曲名（用于发起测试请求）')
+
+  const song = {
+    name: songName,
+    singer: $('singer').value.trim(),
+    albumName: $('albumName').value.trim(),
+    interval: '04:30',
+    ids: {
+      wy: selectedIds.wy || { id: $('songIdWy').value.trim() },
+      tx: selectedIds.tx || { songmid: $('songIdTx').value.trim() },
+      kw: selectedIds.kw || { songmid: $('songIdKw').value.trim() },
+      kg: selectedIds.kg || { hash: $('songIdKg').value.trim() },
+      mg: selectedIds.mg || { copyrightId: $('songIdMg').value.trim() },
+    },
+  }
+
+  $('btnTestBackends').disabled = true
+  $('btnTestBackends').textContent = '检测中...'
+  $('backendStatus').textContent = '检测中，请耐心等待（每个音源约需 30~120 秒）...'
+  $('backendStatus').style.color = '#007aff'
+  $('backendSummary').style.display = 'none'
+
+  backendUnsubscribe = window.api.onBackendProgress((p) => {
+    if (p.type === 'file-progress') {
+      $('backendStatus').textContent = `[${p.current}/${p.total}] ${p.file}`
+    } else if (p.type === 'backend-platform-start') {
+      $('backendStatus').textContent = `${p.file} · ${p.platform}`
+    } else if (p.type === 'backend-host-test') {
+      $('backendStatus').textContent = `${p.file} · ${p.platform} · 测试 ${p.host}`
+    }
+  })
+
+  try {
+    const r = await window.api.testBackends({
+      files: availableFiles,
+      song,
+      options: { platforms: ['kw', 'kg', 'tx', 'wy', 'mg'], timeout: 15000 },
+    })
+    if (!r.ok) {
+      $('backendStatus').textContent = '检测失败: ' + (r.error || '未知错误')
+      $('backendStatus').style.color = '#ff3b30'
+      return
+    }
+    backendResults = r.results
+    renderBackendSummary(r.results)
+    injectBackendPanels(r.results)
+    $('backendStatus').textContent = `完成：${r.results.length} 个音源`
+    $('backendStatus').style.color = '#34c759'
+  } catch (err) {
+    $('backendStatus').textContent = '检测失败: ' + (err.message || err)
+    $('backendStatus').style.color = '#ff3b30'
+  } finally {
+    $('btnTestBackends').disabled = false
+    $('btnTestBackends').textContent = '🎯 检测所有平台后端'
+    if (backendUnsubscribe) backendUnsubscribe()
+  }
+})
+
+function renderBackendSummary(results) {
+  let total = 0, usable = 0
+  for (const r of results) {
+    for (const hosts of Object.values(r.platforms || {})) {
+      total += hosts.length
+      usable += hosts.filter((h) => h.usable).length
+    }
+  }
+  $('backendSummary').style.display = 'block'
+  $('backendSummary').innerHTML = `
+    <div class="backend-stat">
+      <span class="num">${usable}/${total}</span>
+      <span class="lbl">后端可用</span>
+    </div>
+  `
+}
+
+function injectBackendPanels(results) {
+  // 移除旧面板
+  document.querySelectorAll('.backend-panel').forEach((el) => el.remove())
+
+  for (const r of results) {
+    const card = [...document.querySelectorAll('.api-card')].find((c) => {
+      const title = c.querySelector('.api-title')?.textContent || ''
+      return title.includes(r.file)
+    })
+    if (!card) continue
+
+    const platformsWithBackends = Object.entries(r.platforms || {}).filter(
+      ([, hosts]) => hosts.length > 0
+    )
+    if (platformsWithBackends.length === 0) continue
+
+    const body = card.querySelector('.api-body')
+    if (!body) continue
+
+    const panelHtml = `
+      <details class="backend-panel" open>
+        <summary class="backend-panel-summary">
+          <span>🎯 后端清单（${platformsWithBackends.length} 个平台）</span>
+        </summary>
+        <div class="backend-panel-body">
+          ${platformsWithBackends.map(([platform, hosts]) => renderBackendPlatform(r.file, platform, hosts)).join('')}
+        </div>
+      </details>`
+
+    body.insertAdjacentHTML('afterbegin', panelHtml)
+  }
+
+  document.querySelectorAll('.backend-host-cb').forEach((cb) => {
+    cb.addEventListener('change', updateBackendSummary)
+  })
+  document.querySelectorAll('[data-action="all-usable"]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      const file = btn.dataset.file
+      const platform = btn.dataset.platform
+      document.querySelectorAll(`.backend-host-cb[data-file="${cssEscape(file)}"][data-platform="${cssEscape(platform)}"]`).forEach((cb) => {
+        const entry = findBackendEntry(file, platform, cb.dataset.host)
+        cb.checked = !!(entry && entry.usable)
+      })
+      updateBackendSummary()
+    })
+  })
+  document.querySelectorAll('[data-action="all"]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      const file = btn.dataset.file
+      const platform = btn.dataset.platform
+      document.querySelectorAll(`.backend-host-cb[data-file="${cssEscape(file)}"][data-platform="${cssEscape(platform)}"]`).forEach((cb) => {
+        cb.checked = true
+      })
+      updateBackendSummary()
+    })
+  })
+  document.querySelectorAll('[data-action="none"]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      const file = btn.dataset.file
+      const platform = btn.dataset.platform
+      document.querySelectorAll(`.backend-host-cb[data-file="${cssEscape(file)}"][data-platform="${cssEscape(platform)}"]`).forEach((cb) => {
+        cb.checked = false
+      })
+      updateBackendSummary()
+    })
+  })
+
+  updateBackendSummary()
+}
+
+function renderBackendPlatform(file, platform, hosts) {
+  const rows = hosts.map((h) => {
+    const icon = h.usable
+      ? (h.quality && h.qualities[0] && h.quality !== h.qualities[0] ? '🟡' : '🟢')
+      : '🔴'
+    const qualityText = h.usable ? (h.quality || '?') : '—'
+    const statusText = h.usable
+      ? (h.quality && h.qualities[0] && qualityText !== h.qualities[0] ? '可用（降级）' : '可用')
+      : (h.error || '失败')
+
+    return `
+      <label class="backend-host-row">
+        <input type="checkbox" class="backend-host-cb"
+               data-file="${escapeHtml(file)}"
+               data-platform="${escapeHtml(platform)}"
+               data-host="${escapeHtml(h.host)}"
+               ${h.usable ? 'checked' : ''}>
+        <span class="backend-host-icon">${icon}</span>
+        <span class="backend-host-name">${escapeHtml(h.host)}</span>
+        <span class="backend-host-quality">${escapeHtml(qualityText)}</span>
+        <span class="backend-host-status" title="${escapeHtml(statusText)}">${escapeHtml(statusText)}</span>
+      </label>`
+  }).join('')
+
+  return `
+    <div class="backend-platform">
+      <div class="backend-platform-header">
+        <span class="backend-platform-name">${escapeHtml(platform)}</span>
+        <span class="backend-platform-actions">
+          <a href="javascript:void(0)" data-action="all-usable" data-file="${escapeHtml(file)}" data-platform="${escapeHtml(platform)}">仅保留可用</a>
+          <a href="javascript:void(0)" data-action="all" data-file="${escapeHtml(file)}" data-platform="${escapeHtml(platform)}">全选</a>
+          <a href="javascript:void(0)" data-action="none" data-file="${escapeHtml(file)}" data-platform="${escapeHtml(platform)}">全不选</a>
+        </span>
+      </div>
+      <div class="backend-host-list">${rows}</div>
+    </div>`
+}
+
+function findBackendEntry(file, platform, host) {
+  if (!backendResults) return null
+  for (const r of backendResults) {
+    if (r.file !== file) continue
+    const hosts = (r.platforms || {})[platform] || []
+    return hosts.find((h) => h.host === host) || null
+  }
+  return null
+}
+
+function updateBackendSummary() {
+  const all = [...document.querySelectorAll('.backend-host-cb')]
+  const blocked = all.filter((cb) => !cb.checked)
+  if (backendResults) renderBackendSummary(backendResults)
+
+  const blockedSet = new Set(blocked.map((cb) => cb.dataset.host))
+  let el = document.getElementById('blockedHostsSummary')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 'blockedHostsSummary'
+    el.className = 'blocked-hosts-summary'
+    $('backendSummary').appendChild(el)
+  }
+  if (blockedSet.size > 0) {
+    el.style.display = 'block'
+    el.innerHTML = `⚠️ 已屏蔽 ${blockedSet.size} 个域名：
+      <div class="blocked-hosts-list">${[...blockedSet].map((h) => `<code>${escapeHtml(h)}</code>`).join('')}</div>`
+  } else {
+    el.style.display = 'none'
+    el.innerHTML = ''
+  }
+}
+
+function cssEscape(s) {
+  return String(s).replace(/["\\]/g, '\\$&')
+}
+
+function collectBlockedHosts() {
+  const blocked = new Set()
+  document.querySelectorAll('.backend-host-cb').forEach((cb) => {
+    if (!cb.checked) blocked.add(cb.dataset.host)
+  })
+  return [...blocked]
+}
+
+// ═══════════════════════════════════════════════════════
+// 风险提示模块
 // ═══════════════════════════════════════════════════════
 
 function renderRiskBadge(info) {
@@ -285,10 +524,6 @@ function updateRiskSummary() {
   $('riskCountClean').textContent = counts.clean
 }
 
-/**
- * 统一过滤：明文 + 低风险 + 不含越权
- * 所有过滤开关变化都调用此函数
- */
 function applyAllFilters() {
   const onlyPlain = $('filterPlainOnly').checked
   const lowRiskOnly = $('filterLowRiskOnly').checked
@@ -309,10 +544,6 @@ function applyAllFilters() {
 
   updateMergeButtonState()
 }
-
-// ═══════════════════════════════════════════════════════
-// 合并按钮与生成
-// ═══════════════════════════════════════════════════════
 
 function updateMergeButtonState() {
   const anyChecked = document.querySelectorAll(
@@ -343,8 +574,14 @@ $('btnGenerateMerge').addEventListener('click', async () => {
 
   if (Object.keys(selection).length === 0) return alert('至少勾选一个平台')
 
+  const blockedHosts = collectBlockedHosts()
+  if (blockedHosts.length > 0) {
+    const ok = confirm(`检测到 ${blockedHosts.length} 个后端将被屏蔽：\n${blockedHosts.slice(0, 10).join('\n')}${blockedHosts.length > 10 ? '\n...' : ''}\n\n继续生成？`)
+    if (!ok) return
+  }
+
   $('btnGenerateMerge').disabled = true
-  $('mergeStatus').textContent = '正在生成（裁剪 + 排序 + 合并）...'
+  $('mergeStatus').textContent = '正在生成（裁剪 + 排序 + 合并 + 后端屏蔽）...'
   $('mergeStatus').style.color = '#007aff'
 
   try {
@@ -352,6 +589,7 @@ $('btnGenerateMerge').addEventListener('click', async () => {
       files: analyzedFiles,
       selection,
       report: lastReport,
+      blockedHosts,
     })
     if (r && r.ok) {
       $('mergeStatus').textContent = '已生成: ' + r.path
@@ -422,14 +660,10 @@ function renderResult(report) {
     cb.addEventListener('change', updateMergeButtonState)
   })
 
-  // ⭐ 渲染完成后：先刷新风险汇总，再应用所有过滤
   updateRiskSummary()
   applyAllFilters()
 }
 
-/**
- * 根据 info.plainKind 生成徽章 HTML
- */
 function renderPlainBadge(info) {
   if (!info) return ''
 
