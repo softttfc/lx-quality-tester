@@ -653,3 +653,17 @@ details summary {
 }
 
 .url-cell:hover { color: #007aff; }
+/* ⭐ v1.6：独立后端卡片（无音质测试卡片时使用） */
+.standalone-backend-card {
+  border: 1px solid #d0e0f0;
+  background: #fbfdff;
+}
+.standalone-backend-card .api-header {
+  cursor: pointer;
+}
+.standalone-backend-card .api-title {
+  color: #0055aa;
+}
+.standalone-backend-card .api-body {
+  border-top: 1px solid #d0e0f0;
+}
