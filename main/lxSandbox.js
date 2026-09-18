@@ -30,9 +30,23 @@ const SUPPORT_ACTIONS = {
   local: ['musicUrl', 'lyric', 'pic'],
 }
 
-function createLxSandbox(scriptInfo = {}) {
+function extractHost(url) {
+  try {
+    const m = String(url).match(/^https?:\/\/([^/?#]+)/i)
+    return m ? m[1].toLowerCase().replace(/:\d+$/, '') : null
+  } catch (_) {
+    return null
+  }
+}
+
+function createLxSandbox(scriptInfo = {}, options = {}) {
   const handlers = { request: null, inited: null, updateAlert: null }
   const state = { isInitedApi: false, isShowedUpdateAlert: false }
+
+  // ⭐ v1.6 新增：请求过滤 + 请求日志
+  const requestFilter = options.requestFilter || null
+  const logRequests = options.logRequests === true
+  const requestLog = []
 
   const lx = {
     EVENT_NAMES,
@@ -116,7 +130,6 @@ function createLxSandbox(scriptInfo = {}) {
           case EVENT_NAMES.inited: {
             if (state.isInitedApi) return reject(new Error('Script is inited'))
             state.isInitedApi = true
-            // ✅ 模拟官方 handleInit：校验并过滤 sources
             const result = handleInit(data)
             if (!result.status) {
               return reject(new Error(result.errorMessage || 'init failed'))
@@ -142,6 +155,23 @@ function createLxSandbox(scriptInfo = {}) {
       const opts = typeof options === 'object' && options !== null ? options : {}
       const cb = typeof options === 'function' ? options : callback
       if (typeof cb !== 'function') return () => {}
+
+      // ⭐ v1.6 新增：记录请求
+      if (logRequests) {
+        const host = extractHost(url)
+        if (host) requestLog.push({ url, host, timestamp: Date.now() })
+      }
+
+      // ⭐ v1.6 新增：请求过滤（供后端隔离测试使用）
+      if (requestFilter && Array.isArray(requestFilter.allowedHosts)) {
+        const host = extractHost(url)
+        if (host && !requestFilter.allowedHosts.includes(host)) {
+          const err = new Error('ECONNREFUSED: blocked by request filter')
+          err.code = 'ECONNREFUSED'
+          setImmediate(() => cb(err, null, null))
+          return () => {}
+        }
+      }
 
       const method = (opts.method || 'GET').toUpperCase()
       const timeout = opts.timeout && opts.timeout > 0 ? Math.min(opts.timeout, 60000) : 10000
@@ -200,7 +230,6 @@ function createLxSandbox(scriptInfo = {}) {
     },
   }
 
-  // ✅ 模拟官方 handleInit 的过滤逻辑
   function handleInit(info) {
     if (!info || typeof info !== 'object') {
       return { status: false, errorMessage: 'Missing required parameter init info' }
@@ -230,7 +259,11 @@ function createLxSandbox(scriptInfo = {}) {
     return { status: true, info: sourceInfo, sources: sourceInfo.sources }
   }
 
-  return { lx, handlers }
+  return {
+    lx,
+    handlers,
+    getRequestLog: () => requestLog.slice(),
+  }
 }
 
 module.exports = { createLxSandbox, EVENT_NAMES }
