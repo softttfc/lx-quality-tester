@@ -1,23 +1,14 @@
 /**
  * 生成合并后的音源文件
- *
- * @param {Array<{name, content, sources}>} files - 已裁剪的音源文件数组
- * @param {Object} selection - { fileIdx: ['platform1', ...] }
- * @param {Object|null} report - 上次测试的 report（用于静态排序）
- * @returns {string}
  */
+
+const { applyBackendBlacklist } = require('./backendBlocker')
 
 const QUALITY_RANK = [
   'master', 'atmos_plus', 'atmos', 'hires',
   'flac', 'flac24bit', '320k', '192k', '128k',
 ]
 
-/**
- * 从 report 里计算每个音源对每个平台的得分
- * 返回 { fileName: { platform: { bestIdx, passCount } } }
- *   - bestIdx: 通过音质里最高的（数字越小越高），无通过 = 99
- *   - passCount: 通过的音质数量
- */
 function computeScores(report) {
   const scores = {}
   if (!report || !Array.isArray(report.results)) return scores
@@ -40,11 +31,16 @@ function computeScores(report) {
   return scores
 }
 
-function generateMergedCode(files, selection, report) {
-  // 0. 计算每个音源的得分
+/**
+ * @param {Array} files
+ * @param {Object} selection
+ * @param {Object|null} report
+ * @param {Object} options ⭐ v1.6 新增：{ blockedHosts: string[] }
+ */
+function generateMergedCode(files, selection, report, options = {}) {
+  const blockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
   const scores = computeScores(report)
 
-  // 1. 计算 PLATFORM_PRIORITY（平台 → 优先音源索引列表）
   const priorityMap = {}
   for (const [fileIdxStr, platforms] of Object.entries(selection)) {
     const fileIdx = Number(fileIdxStr)
@@ -56,7 +52,6 @@ function generateMergedCode(files, selection, report) {
     }
   }
 
-  // ⭐ 按测试报告排序：优先音质高 → 通过数多 → 原索引
   for (const p of Object.keys(priorityMap)) {
     priorityMap[p].sort((a, b) => {
       const nameA = files[a]?.name || ''
@@ -69,7 +64,6 @@ function generateMergedCode(files, selection, report) {
     })
   }
 
-  // 2. 计算 mergedSources（qualitys 取并集）
   const mergedSources = {}
   for (const [platform, priorityList] of Object.entries(priorityMap)) {
     let mergedQualitys = new Set()
@@ -94,7 +88,6 @@ function generateMergedCode(files, selection, report) {
     }
   }
 
-  // 3. 头部注释（把排序信息也写进去，方便追溯）
   let code = `/*!
  * @name 合并音源
  * @description 由以下音源合并生成（平台优先级已按上次测试结果排序）：
@@ -127,12 +120,6 @@ ${files.map((f, i) => {
 
   // ═══════════════════════════════════════════════════════
   // 【方案 B】异步错误记录器
-  //   - 目的：让音源内部产生的 unhandledRejection（例如某音源末尾
-  //     直接 checkLatestVersion().then(...) 而没有 .catch()）在控制台
-  //     可见，便于排查。
-  //   - 注意：这里**不调用** e.preventDefault()，不阻止宿主（LX Music）
-  //     自身对 unhandledRejection 的处理逻辑。是否弹窗、是否视为
-  //     音源加载失败，仍然由 LX Music 客户端自行决定。
   // ═══════════════════════════════════════════════════════
   ;(function () {
     var __onUnhandled__ = function (e) {
@@ -140,7 +127,6 @@ ${files.map((f, i) => {
         var msg = (e && e.reason && e.reason.message) || (e && e.message) || String(e)
         console.warn('[合并音源] 捕获到未处理的异步错误（不阻止宿主处理）:', msg)
       } catch (_) {}
-      // ⚠️ 不调用 e.preventDefault()，让 LX Music 客户端保持原有行为
     }
     try {
       if (typeof process !== 'undefined' && typeof process.on === 'function') {
@@ -153,25 +139,59 @@ ${files.map((f, i) => {
       }
     } catch (_) {}
   })()
+`
 
+  // ⭐ v1.6 新增：运行时黑名单 hook（第 3 层）
+  if (blockedHosts.length > 0) {
+    code += `
   // ═══════════════════════════════════════════════════════
-  // 平台优先级（已按上次测试结果静态排序）
+  // 【第 3 层】运行时 hook：拦截黑名单域名的请求
+  // ═══════════════════════════════════════════════════════
+  ;(function () {
+    var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
+    var __origin_request = __origin_lx.request
+    __origin_lx.request = function (url, options, cb) {
+      var cb2 = (typeof options === 'function') ? options : cb
+      try {
+        var hostMatch = String(url).match(/^https?:\\/\\/([^/?#]+)/i)
+        var host = hostMatch ? hostMatch[1].toLowerCase().replace(/:\\d+$/, '') : null
+        if (host && __BLOCKED_HOSTS__.has(host)) {
+          var err = new Error('backend blacklisted (by merger)')
+          err.code = 'EBACKEND_BLOCKED'
+          if (typeof cb2 === 'function') setImmediate(function () { cb2(err, null, null) })
+          return function () {}
+        }
+      } catch (e) {}
+      return __origin_request.apply(this, arguments)
+    }
+  })()
+`
+  }
+
+  code += `
+  // ═══════════════════════════════════════════════════════
+  // 平台优先级
   // ═══════════════════════════════════════════════════════
   const PLATFORM_PRIORITY = ${JSON.stringify(priorityMap, null, 2)}
 
-  // ═══════════════════════════════════════════════════════
-  // Handler 收集器
-  // ═══════════════════════════════════════════════════════
   const __handlers__ = []
 `
 
-  // 4. 每个音源包进 IIFE
   for (let i = 0; i < files.length; i++) {
     const file = files[i]
     const platforms = selection[i] || []
     if (platforms.length === 0) continue
 
-    const replaced = file.content
+    let content = file.content
+    if (blockedHosts.length > 0) {
+      const r = applyBackendBlacklist(content, blockedHosts)
+      if (!r.report.error) {
+        content = r.code
+        console.log(`[backendBlocker] ${file.name}: AST 删 ${r.report.ast} 个，字符串替换 ${r.report.string} 处，漏 ${r.report.missed.length}`)
+      }
+    }
+
+    const replaced = content
       .replace(/globalThis\s*\.\s*lx\b/g, '__lx_proxy__')
       .replace(/globalThis\s*\[\s*['"]lx['"]\s*\]/g, '__lx_proxy__')
 
@@ -190,17 +210,12 @@ ${files.map((f, i) => {
         }
       }
 
-      // ⭐ 关键修复（改动 1）：这里必须带分号
-      // 否则若原始代码以 '(' / '[' / '+' / '-' 开头（webpack 打包产物常见），
-      // 会触发 ASI 陷阱，把两段代码合并成一个调用表达式，
-      // 导致音源内部拿到的是真实的 lx.send，从而提前/重复发 inited 事件。
       __lx_proxy__.send = function () {};
 
       // ═════════════ 原始代码开始 ═════════════
 ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
       // ═════════════ 原始代码结束 ═════════════
     } catch (__e) {
-      // 改动 2：单个音源的同步加载异常不应炸掉整个合并文件
       try {
         console.error(
           '[合并音源] 音源[' + (__fileIdx + 1) + '] 加载异常:',
@@ -212,7 +227,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
 `
   }
 
-  // 5. 分发器（质量探测 + 静态排序兜底）
   code += `
   // ═══════════════════════════════════════════════════════
   // 质量探测工具
@@ -225,7 +239,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
 
   function __detectQuality__(buf) {
     if (!buf || buf.length < 12) return null
-    // FLAC
     if (buf[0]===0x66 && buf[1]===0x4C && buf[2]===0x61 && buf[3]===0x43) {
       if (buf.length < 42) return 'flac'
       var si = 8
@@ -236,7 +249,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
       if (sr >= 96000 || bd >= 24) return 'hires'
       return 'flac'
     }
-    // MP3
     if ((buf[0]===0x49 && buf[1]===0x44 && buf[2]===0x33) ||
         (buf[0]===0xFF && (buf[1]&0xE0)===0xE0)) {
       var bitrateTableV1L3 = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0]
@@ -260,32 +272,23 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
       }
       return null
     }
-    // M4A/AAC
     if (buf[4]===0x66 && buf[5]===0x74 && buf[6]===0x79 && buf[7]===0x70) return '128k'
-    // OGG
     if (buf[0]===0x4F && buf[1]===0x67 && buf[2]===0x67 && buf[3]===0x53) return 'flac'
-    // WAV
     if (buf[0]===0x52 && buf[1]===0x49 && buf[2]===0x46 && buf[3]===0x46) return 'flac'
     return null
   }
 
-  // ⭐ 把各种可能的 body 类型转为 Uint8Array
   function __bodyToBuffer__(body) {
     if (!body) return null
-    // ArrayBuffer
     if (body instanceof ArrayBuffer) return new Uint8Array(body)
-    // Uint8Array / 其他 TypedArray
     if (body instanceof Uint8Array) return body
     if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
-    // ⭐ LX native 序列化后的 {type:'Buffer', data:[...]}
     if (body && body.type === 'Buffer' && Array.isArray(body.data)) {
       return new Uint8Array(body.data)
     }
-    // Buffer（Node 环境模拟）
     if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(body)) {
       return new Uint8Array(body)
     }
-    // 字符串（最后兜底）
     if (typeof body === 'string') {
       var arr = new Uint8Array(body.length)
       for (var i = 0; i < body.length; i++) arr[i] = body.charCodeAt(i) & 0xFF
@@ -317,9 +320,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     })
   }
 
-  // ═══════════════════════════════════════════════════════
-  // 统一分发器：按静态优先级尝试，运行时探测兜底
-  // ═══════════════════════════════════════════════════════
   __origin_lx.on(EVENT_NAMES.request, async function (params) {
     const source = params.source
     const priorityList = PLATFORM_PRIORITY[source]
@@ -340,23 +340,19 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
 
         const actual = await __probeUrl__(result)
 
-        // ⭐ 探测失败 → 继续尝试下一个音源（选项 B）
         if (!actual) {
           errors.push('[源' + (fileIdx + 1) + '] 探测失败')
           continue
         }
-        // ⭐ 质量达标 → 返回
         if (__qualityIndex__(actual) <= reqIdx) {
           return result
         }
-        // ⭐ 降级 → 继续尝试
         errors.push('[源' + (fileIdx + 1) + '] 降级 ' + requested + '→' + actual)
       } catch (e) {
         errors.push('[源' + (fileIdx + 1) + '] ' + (e && e.message ? e.message : String(e)))
       }
     }
 
-    // ⭐ 全部失败 → 回退到"静态排序第一个音源"的结果（避免完全不可用）
     try {
       const firstIdx = priorityList[0]
       const h0 = __handlers__.find(function (x) { return x.fileIdx === firstIdx })
@@ -364,9 +360,7 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
         const fallback = await h0.handler(params)
         if (fallback) return fallback
       }
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
 
     if (errors.length === 0) {
       throw new Error('平台 ' + source + ' 没有任何可用的处理程序')
@@ -374,9 +368,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     throw new Error('平台 ' + source + ' 全部失败: ' + errors.slice(0, 8).join(' | '))
   })
 
-  // ═══════════════════════════════════════════════════════
-  // 声明 inited（静态）
-  // ═══════════════════════════════════════════════════════
   __origin_lx.send(EVENT_NAMES.inited, {
     openDevTools: false,
     sources: ${JSON.stringify(mergedSources, null, 6)}
