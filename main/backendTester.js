@@ -68,11 +68,23 @@ function qualityIndex(q) {
 
 /**
  * 一次带日志记录/过滤的单次请求
+ *
+ * ⭐ v1.7 扩展：新增 extraOptions 参数
+ *   - extraOptions.blockedHosts：黑名单模式（拒绝列表内域名，其余放行）
+ *   - 若同时提供 allowedHosts 和 blockedHosts，先白名单后黑名单
  */
-async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeout) {
+async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeout, extraOptions = {}) {
+  // ⭐ 构造 requestFilter：优先黑名单，其次白名单
+  let requestFilter = null
+  if (extraOptions.blockedHosts && extraOptions.blockedHosts.length > 0) {
+    requestFilter = { blockedHosts: extraOptions.blockedHosts }
+  } else if (allowedHosts) {
+    requestFilter = { allowedHosts: [...allowedHosts] }
+  }
+
   const loaded = await loadApiSource(scriptPath, {
     logRequests: true,
-    requestFilter: allowedHosts ? { allowedHosts } : null,
+    requestFilter,
     initTimeout: 10000,
     scriptTimeout: 20000,
   })
@@ -260,14 +272,27 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
     }
 
     // Phase 2：对每个主机做隔离测试
+    // ⭐ v1.7：改用黑名单模式
+    //   - 只拒绝"其他候选后端"
+    //   - 媒体 CDN、签名服务、前置 Token 服务全部放行
+    //   - 这样两阶段后端（官方 API + CDN）才能完整跑通
     const hostList = [...hostMap.values()]
+    const allBackendHosts = hostList.map((e) => e.host)
+
     for (let i = 0; i < hostList.length; i++) {
       const entry = hostList[i]
       const testQuality = [...entry.qualities].sort((a, b) => qualityIndex(a) - qualityIndex(b))[0]
       onProgress({ type: 'backend-host-test', file, platform, host: entry.host, quality: testQuality })
 
-      const allowed = new Set([entry.host])
-      const isolated = await runOnce(scriptPath, song, platform, testQuality, allowed, timeout)
+      // ⭐ 黑名单：拒绝所有"其他候选后端"，其余全放行
+      const otherBackendHosts = allBackendHosts.filter((h) => h !== entry.host)
+
+      const isolated = await runOnce(
+        scriptPath, song, platform, testQuality,
+        null,                              // 不使用白名单
+        timeout,
+        { blockedHosts: otherBackendHosts }
+      )
 
       if (!isolated.url) {
         entry.usable = false
