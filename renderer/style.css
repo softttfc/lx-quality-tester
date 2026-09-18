@@ -1,5 +1,4 @@
 :root {
-  /* 风险等级色板 */
   --risk-high-bg: #7a1f1f;
   --risk-high-fg: #ffbdbd;
   --risk-high-border: #b33333;
@@ -270,7 +269,6 @@ details summary {
   overflow: hidden;
 }
 
-/* ⭐ 被"只显示明文音源 / 只看低风险 / 隐藏越权"过滤掉的卡片 */
 .api-card.filtered-out {
   display: none;
 }
@@ -319,7 +317,6 @@ details summary {
   border: 1px solid #b35c00;
 }
 
-/* ⭐ 风险徽章 */
 .badge-risk-high {
   background: var(--risk-high-bg);
   color: var(--risk-high-fg);
@@ -347,7 +344,6 @@ details summary {
   padding: 8px 0;
 }
 
-/* ⭐ 风险面板（第 3 层） */
 .risk-panel {
   margin-bottom: 12px;
   border: 1px solid #f0e0c0;
@@ -355,18 +351,9 @@ details summary {
   background: #fffdf5;
   overflow: hidden;
 }
-.risk-panel.risk-high {
-  border-color: #f0c0c0;
-  background: #fff8f8;
-}
-.risk-panel.risk-medium {
-  border-color: #f0dfa0;
-  background: #fffcf0;
-}
-.risk-panel.risk-low {
-  border-color: #c0e8c8;
-  background: #f6fff8;
-}
+.risk-panel.risk-high { border-color: #f0c0c0; background: #fff8f8; }
+.risk-panel.risk-medium { border-color: #f0dfa0; background: #fffcf0; }
+.risk-panel.risk-low { border-color: #c0e8c8; background: #f6fff8; }
 .risk-panel-summary {
   padding: 8px 12px;
   cursor: pointer;
@@ -377,18 +364,9 @@ details summary {
   align-items: center;
   list-style: none;
 }
-.risk-panel-summary::-webkit-details-marker {
-  display: none;
-}
-.risk-panel-summary::before {
-  content: '▼';
-  font-size: 10px;
-  color: #999;
-  margin-right: 4px;
-}
-.risk-panel:not([open]) > .risk-panel-summary::before {
-  content: '▶';
-}
+.risk-panel-summary::-webkit-details-marker { display: none; }
+.risk-panel-summary::before { content: '▼'; font-size: 10px; color: #999; margin-right: 4px; }
+.risk-panel:not([open]) > .risk-panel-summary::before { content: '▶'; }
 .risk-panel-hint {
   font-size: 11px;
   color: #999;
@@ -402,22 +380,10 @@ details summary {
   padding: 4px 16px 12px;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
 }
-.risk-item {
-  margin-bottom: 10px;
-}
-.risk-item:last-child {
-  margin-bottom: 0;
-}
-.risk-item-title {
-  font-size: 12px;
-  font-weight: 500;
-  margin-bottom: 4px;
-  color: #444;
-}
-.risk-item ul {
-  list-style: none;
-  padding-left: 0;
-}
+.risk-item { margin-bottom: 10px; }
+.risk-item:last-child { margin-bottom: 0; }
+.risk-item-title { font-size: 12px; font-weight: 500; margin-bottom: 4px; color: #444; }
+.risk-item ul { list-style: none; padding-left: 0; }
 .risk-item li {
   font-size: 11px;
   color: #666;
@@ -432,7 +398,6 @@ details summary {
   font-size: 10px;
 }
 
-/* ⭐ 侧边栏风险汇总（第 4 层） */
 .risk-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -446,38 +411,156 @@ details summary {
   border-radius: 4px;
   border: 1px solid transparent;
 }
-.risk-stat[data-level="high"] {
-  background: #fff0f0;
-  border-color: #ffd0d0;
+.risk-stat[data-level="high"] { background: #fff0f0; border-color: #ffd0d0; }
+.risk-stat[data-level="medium"] { background: #fff8e6; border-color: #ffe4b3; }
+.risk-stat[data-level="low"] { background: #f0fff4; border-color: #c8ecd0; }
+.risk-stat .num { display: block; font-size: 18px; font-weight: 600; color: #333; }
+.risk-stat[data-level="high"] .num { color: #d43f3f; }
+.risk-stat[data-level="medium"] .num { color: #cc8800; }
+.risk-stat[data-level="low"] .num { color: #33a366; }
+.risk-stat .lbl { display: block; font-size: 10px; color: #999; margin-top: 2px; }
+
+/* ⭐ v1.6：后端检测样式 */
+.backend-summary {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #f9f9f9;
+  border-radius: 6px;
+  font-size: 12px;
 }
-.risk-stat[data-level="medium"] {
-  background: #fff8e6;
-  border-color: #ffe4b3;
+.backend-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
-.risk-stat[data-level="low"] {
-  background: #f0fff4;
-  border-color: #c8ecd0;
+.backend-stat .num {
+  font-size: 16px;
+  font-weight: 600;
+  color: #007aff;
 }
-.risk-stat .num {
-  display: block;
-  font-size: 18px;
+.backend-stat .lbl {
+  font-size: 11px;
+  color: #999;
+}
+
+.backend-panel {
+  margin-bottom: 12px;
+  border: 1px solid #d0e0f0;
+  border-radius: 6px;
+  background: #f6faff;
+  overflow: hidden;
+}
+.backend-panel-summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: #0055aa;
+  list-style: none;
+}
+.backend-panel-summary::-webkit-details-marker { display: none; }
+.backend-panel-summary::before {
+  content: '▼';
+  font-size: 10px;
+  margin-right: 6px;
+  color: #77a;
+}
+.backend-panel:not([open]) > .backend-panel-summary::before { content: '▶'; }
+.backend-panel-body {
+  padding: 4px 12px 10px;
+  border-top: 1px solid #d0e0f0;
+}
+
+.backend-platform { margin-bottom: 12px; }
+.backend-platform:last-child { margin-bottom: 0; }
+.backend-platform-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.backend-platform-name {
+  font-size: 12px;
   font-weight: 600;
   color: #333;
 }
-.risk-stat[data-level="high"] .num {
-  color: #d43f3f;
+.backend-platform-actions {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
 }
-.risk-stat[data-level="medium"] .num {
-  color: #cc8800;
+.backend-platform-actions a {
+  color: #007aff;
+  text-decoration: none;
 }
-.risk-stat[data-level="low"] .num {
-  color: #33a366;
+.backend-platform-actions a:hover { text-decoration: underline; }
+
+.backend-host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
-.risk-stat .lbl {
-  display: block;
+.backend-host-row {
+  display: grid;
+  grid-template-columns: 20px 16px 1fr 60px 90px;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.backend-host-row:hover { background: rgba(0, 122, 255, 0.06); }
+.backend-host-cb {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #007aff;
+}
+.backend-host-icon { text-align: center; }
+.backend-host-name {
+  font-family: Consolas, monospace;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backend-host-quality {
+  color: #666;
+  font-family: Consolas, monospace;
+  text-align: center;
+}
+.backend-host-status {
+  color: #666;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.blocked-hosts-summary {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: #fff5e6;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #8a5000;
+  line-height: 1.6;
+}
+.blocked-hosts-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.blocked-hosts-list code {
+  background: #ffe4b3;
+  padding: 1px 4px;
+  border-radius: 3px;
   font-size: 10px;
-  color: #999;
-  margin-top: 2px;
+  font-family: Consolas, monospace;
 }
 
 .platform {
@@ -551,26 +634,12 @@ details summary {
   font-size: 10px;
 }
 
-.status-ok {
-  color: #34c759;
-}
+.status-ok { color: #34c759; }
+.status-fail { color: #ff3b30; }
+.status-warn { color: #ff9500; font-weight: 500; }
 
-.status-fail {
-  color: #ff3b30;
-}
-
-.status-warn {
-  color: #ff9500;
-  font-weight: 500;
-}
-
-.row-downgrade {
-  background: #fff8e6;
-}
-
-.row-unplayable {
-  background: #fff0f0;
-}
+.row-downgrade { background: #fff8e6; }
+.row-unplayable { background: #fff0f0; }
 
 .url-cell {
   max-width: 280px;
@@ -583,6 +652,4 @@ details summary {
   cursor: pointer;
 }
 
-.url-cell:hover {
-  color: #007aff;
-}
+.url-cell:hover { color: #007aff; }
