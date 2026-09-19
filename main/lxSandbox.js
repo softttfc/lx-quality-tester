@@ -162,26 +162,14 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         if (host) requestLog.push({ url, host, timestamp: Date.now() })
       }
 
-      // ⭐ v1.7 请求过滤（支持白名单 / 黑名单两种模式）
-      //   - allowedHosts：白名单，只放行列表内域名
-      //   - blockedHosts：黑名单，拒绝列表内域名，其余放行
-      //   两者可同时存在：先过白名单，再过黑名单
-      if (requestFilter) {
+      // ⭐ v1.6 新增：请求过滤（供后端隔离测试使用）
+      if (requestFilter && Array.isArray(requestFilter.allowedHosts)) {
         const host = extractHost(url)
-        if (host) {
-          let blocked = false
-          if (Array.isArray(requestFilter.allowedHosts)) {
-            if (!requestFilter.allowedHosts.includes(host)) blocked = true
-          }
-          if (!blocked && Array.isArray(requestFilter.blockedHosts)) {
-            if (requestFilter.blockedHosts.includes(host)) blocked = true
-          }
-          if (blocked) {
-            const err = new Error('ECONNREFUSED: blocked by request filter')
-            err.code = 'ECONNREFUSED'
-            setImmediate(() => cb(err, null, null))
-            return () => {}
-          }
+        if (host && !requestFilter.allowedHosts.includes(host)) {
+          const err = new Error('ECONNREFUSED: blocked by request filter')
+          err.code = 'ECONNREFUSED'
+          setImmediate(() => cb(err, null, null))
+          return () => {}
         }
       }
 
