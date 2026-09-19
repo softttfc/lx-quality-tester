@@ -35,7 +35,7 @@ function computeScores(report) {
  * @param {Array} files
  * @param {Object} selection
  * @param {Object|null} report
- * @param {Object} options ⭐ v1.6 新增：{ blockedHosts: string[] }
+ * @param {Object} options { blockedHosts: string[] }
  */
 function generateMergedCode(files, selection, report, options = {}) {
   const blockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
@@ -141,16 +141,17 @@ ${files.map((f, i) => {
   })()
 `
 
-  // ⭐ v1.6 新增：运行时黑名单 hook（第 3 层）
+  // ⭐ v1.7：定义黑名单 + 包装器工厂（不在 globalThis.lx 上直接赋值）
   if (blockedHosts.length > 0) {
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【第 3 层】运行时 hook：拦截黑名单域名的请求
+  // 【第 3 层】后端黑名单（在每个音源内部包装 request）
+  //   - 不直接改 globalThis.lx.request（真机上是 read-only 属性）
+  //   - 而是定义一个包装器工厂，由每个音源 IIFE 独立调用
   // ═══════════════════════════════════════════════════════
-  ;(function () {
-    var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
-    var __origin_request = __origin_lx.request
-    __origin_lx.request = function (url, options, cb) {
+  var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
+  function __makeRequestWrapper__(origRequest) {
+    return function (url, options, cb) {
       var cb2 = (typeof options === 'function') ? options : cb
       try {
         var hostMatch = String(url).match(/^https?:\\/\\/([^/?#]+)/i)
@@ -162,9 +163,9 @@ ${files.map((f, i) => {
           return function () {}
         }
       } catch (e) {}
-      return __origin_request.apply(this, arguments)
+      return origRequest.apply(this, arguments)
     }
-  })()
+  }
 `
   }
 
@@ -211,6 +212,16 @@ ${files.map((f, i) => {
       }
 
       __lx_proxy__.send = function () {};
+
+      // ⭐ v1.7：在本音源内部包装 request（只改拷贝出来的 __lx_proxy__，
+      // 不改全局 __origin_lx.request）。这样：
+      //   1. 避免触发 globalThis.lx.request 的 read-only 保护
+      //   2. 拦截只影响当前音源，不污染宿主与其他音源
+      if (typeof __makeRequestWrapper__ === 'function' && __lx_proxy__.request) {
+        try {
+          __lx_proxy__.request = __makeRequestWrapper__(__lx_proxy__.request)
+        } catch (_) {}
+      }
 
       // ═════════════ 原始代码开始 ═════════════
 ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
