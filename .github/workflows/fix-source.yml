@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       file:
-        description: '合并音源文件名（留空自动检测 merged-source-*.js）'
+        description: 'merged-source-1789804624644.js'
         required: false
         default: ''
         type: string
