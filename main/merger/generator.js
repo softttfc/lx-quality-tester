@@ -9,6 +9,49 @@ const QUALITY_RANK = [
   'flac', 'flac24bit', '320k', '192k', '128k',
 ]
 
+// ═══════════════════════════════════════════════════════
+// 【块 C】受保护域名（防止用户误屏蔽官方 API / 媒体 CDN）
+// ═══════════════════════════════════════════════════════
+const PROTECTED_HOST_PATTERNS = [
+  // 官方 API
+  /(^|\.)y\.qq\.com$/,
+  /(^|\.)music\.163\.com$/,
+  /(^|\.)kugou\.com$/,
+  /(^|\.)kuwo\.cn$/,
+  /(^|\.)migu\.cn$/,
+  /^music-api\.gdstudio\.xyz$/,
+
+  // 媒体 CDN
+  /(^|\.)m[^.]*\.music\.126\.net$/,
+  /^dl\.stream\.qqmusic\.qq\.com$/,
+  /(^|\.)kw-[^.]+\.kuwo\.cn$/,
+]
+
+function isProtectedHost(host) {
+  if (!host) return false
+  return PROTECTED_HOST_PATTERNS.some((re) => re.test(host))
+}
+
+function filterProtectedHosts(hosts) {
+  const input = Array.isArray(hosts) ? hosts : []
+  const kept = []
+  const removed = []
+
+  for (const host of input) {
+    if (isProtectedHost(host)) removed.push(host)
+    else kept.push(host)
+  }
+
+  if (removed.length > 0) {
+    console.warn(
+      '[generator] 以下受保护域名已被忽略，不会写入黑名单：' +
+      removed.join(', ')
+    )
+  }
+
+  return kept
+}
+
 function computeScores(report) {
   const scores = {}
   if (!report || !Array.isArray(report.results)) return scores
@@ -38,7 +81,10 @@ function computeScores(report) {
  * @param {Object} options { blockedHosts: string[] }
  */
 function generateMergedCode(files, selection, report, options = {}) {
-  const blockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
+  // ⭐ 块 C：过滤受保护域名，防止误屏蔽官方 API / 媒体 CDN
+  const rawBlockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
+  const blockedHosts = filterProtectedHosts(rawBlockedHosts)
+
   const scores = computeScores(report)
 
   const priorityMap = {}
@@ -249,7 +295,7 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
   }
 
   function __detectQuality__(buf) {
-    if (!buf || buf.length < 12) return null
+    if (!buf || buf.length < 4) return null
     if (buf[0]===0x66 && buf[1]===0x4C && buf[2]===0x61 && buf[3]===0x43) {
       if (buf.length < 42) return 'flac'
       var si = 8
@@ -308,21 +354,41 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     return null
   }
 
+  // ⭐ 块 A：放宽探测（超时 8s、Range 1KB、最小 4 字节、三态返回）
   function __probeUrl__(url) {
     return new Promise(function (resolve) {
-      var timer = setTimeout(function () { resolve(null) }, 3000)
+      var timer = setTimeout(function () { resolve(null) }, 8000)
       try {
         __origin_lx.request(url, {
           method: 'GET',
-          headers: { 'Range': 'bytes=0-16383' },
-          timeout: 3000,
+          headers: { 'Range': 'bytes=0-1023' },
+          timeout: 8000,
           binary: true,
         }, function (err, resp) {
           clearTimeout(timer)
+
+          // ① 明确失败：连接错误 / 无响应
           if (err || !resp) return resolve(null)
+
+          // ② 明确失败：HTTP 4xx / 5xx
+          if (resp.statusCode < 200 || resp.statusCode >= 400) {
+            return resolve(null)
+          }
+
           var buf = __bodyToBuffer__(resp.body)
-          if (!buf || buf.length < 12) return resolve(null)
-          resolve(__detectQuality__(buf))
+
+          // ③ 能连上，但数据太短，无法识别格式 → 视作可用
+          if (!buf || buf.length < 4) {
+            return resolve('__UNKNOWN_OK__')
+          }
+
+          var q = __detectQuality__(buf)
+
+          // ④ 能连上，但识别不出格式 → 视作可用
+          if (!q) return resolve('__UNKNOWN_OK__')
+
+          // ⑤ 识别出具体音质
+          return resolve(q)
         })
       } catch (e) {
         clearTimeout(timer)
@@ -351,13 +417,23 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
 
         const actual = await __probeUrl__(result)
 
-        if (!actual) {
+        // ⭐ 块 B：三态判定
+        // ① 明确失败 → 跳过
+        if (actual === null) {
           errors.push('[源' + (fileIdx + 1) + '] 探测失败')
           continue
         }
+
+        // ② 能连上但未知格式 → 直接视作可用
+        if (actual === '__UNKNOWN_OK__') {
+          return result
+        }
+
+        // ③ 识别出具体音质 → 走原音质判定
         if (__qualityIndex__(actual) <= reqIdx) {
           return result
         }
+
         errors.push('[源' + (fileIdx + 1) + '] 降级 ' + requested + '→' + actual)
       } catch (e) {
         errors.push('[源' + (fileIdx + 1) + '] ' + (e && e.message ? e.message : String(e)))
