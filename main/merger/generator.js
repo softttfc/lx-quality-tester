@@ -1,5 +1,6 @@
 /**
  * 生成合并后的音源文件
+ * @version 1.1.0
  */
 
 const { applyBackendBlacklist } = require('./backendBlocker')
@@ -50,6 +51,17 @@ function filterProtectedHosts(hosts) {
   }
 
   return kept
+}
+
+/**
+ * 从源文件内容中提取 header 注释块（/*! ... *\/）
+ * 用于注入 currentScriptInfo.rawScript，让需要解析 @wy_token 之类的源能正常工作
+ * 相比嵌入完整源码，能避免生成文件体积翻倍
+ */
+function extractHeader(content) {
+  if (typeof content !== 'string') return ''
+  const m = content.match(/^\/\*![\s\S]*?\*\//)
+  return m ? m[0] : ''
 }
 
 function computeScores(report) {
@@ -152,7 +164,7 @@ ${files.map((f, i) => {
     : ''
   return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}`
 }).join('\n')}
- * @version 1.0.0
+ * @version 1.1.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -165,7 +177,7 @@ ${files.map((f, i) => {
   const EVENT_NAMES = __origin_lx.EVENT_NAMES
 
   // ═══════════════════════════════════════════════════════
-  // 【方案 B】异步错误记录器
+  // 【方案 B】异步错误记录器（防 LX 因 unhandledRejection 判初始化失败）
   // ═══════════════════════════════════════════════════════
   ;(function () {
     var __onUnhandled__ = function (e) {
@@ -187,29 +199,35 @@ ${files.map((f, i) => {
   })()
 `
 
-  // ⭐ v1.7：定义黑名单 + 包装器工厂（不在 globalThis.lx 上直接赋值）
+  // ⭐ 运行时 request 包装器工厂
   if (blockedHosts.length > 0) {
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【第 3 层】后端黑名单（在每个音源内部包装 request）
-  //   - 不直接改 globalThis.lx.request（真机上是 read-only 属性）
-  //   - 而是定义一个包装器工厂，由每个音源 IIFE 独立调用
+  // 【第 3 层】后端黑名单（运行时包装 request）
+  //   - 不改 globalThis.lx.request（read-only）
+  //   - 每个音源在自身 IIFE 里拷贝 lx 后包装
+  //   - 拦截时伪造 ENOTFOUND（伪装成 DNS 失败）
+  //     让源内部的错误处理逻辑能自然跳过这个后端
   // ═══════════════════════════════════════════════════════
   var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
-  function __makeRequestWrapper__(origRequest) {
+  function __makeRequestWrapper__(origRequest, lxRef) {
     return function (url, options, cb) {
       var cb2 = (typeof options === 'function') ? options : cb
       try {
         var hostMatch = String(url).match(/^https?:\\/\\/([^/?#]+)/i)
         var host = hostMatch ? hostMatch[1].toLowerCase().replace(/:\\d+$/, '') : null
         if (host && __BLOCKED_HOSTS__.has(host)) {
-          var err = new Error('backend blacklisted (by merger)')
-          err.code = 'EBACKEND_BLOCKED'
+          var err = new Error('getaddrinfo ENOTFOUND ' + host)
+          err.code = 'ENOTFOUND'
+          err.errno = -3008
+          err.syscall = 'getaddrinfo'
+          err.hostname = host
+          err.blockedByMerger = true
           if (typeof cb2 === 'function') setImmediate(function () { cb2(err, null, null) })
           return function () {}
         }
       } catch (e) {}
-      return origRequest.apply(this, arguments)
+      return origRequest.apply(lxRef || this || __origin_lx, arguments)
     }
   }
 `
@@ -229,18 +247,33 @@ ${files.map((f, i) => {
     const platforms = selection[i] || []
     if (platforms.length === 0) continue
 
+    // ⭐ 不再做字符串替换（改由 backendBlocker AST 删除 + 运行时包装兜底）
     let content = file.content
     if (blockedHosts.length > 0) {
       const r = applyBackendBlacklist(content, blockedHosts)
       if (!r.report.error) {
         content = r.code
-        console.log(`[backendBlocker] ${file.name}: AST 删 ${r.report.ast} 个，字符串替换 ${r.report.string} 处，漏 ${r.report.missed.length}`)
+        console.log(
+          `[backendBlocker] ${file.name}: AST 删 ${r.report.ast} 个, ` +
+          `跳过 ${r.report.skipped.length} 个, 漏 ${r.report.missed.length}`
+        )
       }
     }
 
     const replaced = content
       .replace(/globalThis\s*\.\s*lx\b/g, '__lx_proxy__')
       .replace(/globalThis\s*\[\s*['"]lx['"]\s*\]/g, '__lx_proxy__')
+
+    // ⭐ 给每个源注入"自己"的 currentScriptInfo
+    //    rawScript 只用 header，避免生成文件体积翻倍
+    const ownScriptInfo = {
+      name: (file.info && file.info.name) || file.name,
+      description: (file.info && file.info.description) || '',
+      version: (file.info && file.info.version) || '',
+      author: (file.info && file.info.author) || '',
+      homepage: (file.info && file.info.homepage) || '',
+      rawScript: extractHeader(content),
+    }
 
     code += `
   // ═══════════════════════════════════════════════════════
@@ -249,7 +282,22 @@ ${files.map((f, i) => {
   ;(function () {
     const __fileIdx = ${i}
     try {
-      const __lx_proxy__ = Object.assign({}, __origin_lx)
+      // ⭐ 修复：保留 lx 的原型链与不可枚举属性（env / version / utils 等）
+      const __lx_proxy__ = (function () {
+        var p
+        try { p = Object.create(Object.getPrototypeOf(__origin_lx) || Object.prototype) } catch (_) { p = {} }
+        try {
+          var names = Object.getOwnPropertyNames(__origin_lx)
+          for (var i = 0; i < names.length; i++) {
+            try { p[names[i]] = __origin_lx[names[i]] } catch (_) {}
+          }
+        } catch (_) {
+          try {
+            for (var k in __origin_lx) { try { p[k] = __origin_lx[k] } catch (_) {} }
+          } catch (_) {}
+        }
+        return p
+      })()
 
       __lx_proxy__.on = function (event, handler) {
         if (event === EVENT_NAMES.request) {
@@ -257,15 +305,21 @@ ${files.map((f, i) => {
         }
       }
 
-      __lx_proxy__.send = function () {};
+      __lx_proxy__.send = function () {}
 
-      // ⭐ v1.7：在本音源内部包装 request（只改拷贝出来的 __lx_proxy__，
-      // 不改全局 __origin_lx.request）。这样：
-      //   1. 避免触发 globalThis.lx.request 的 read-only 保护
-      //   2. 拦截只影响当前音源，不污染宿主与其他音源
+      // ⭐ 修复：注入本音源自己的 currentScriptInfo（避免读到合并大文件）
+      try {
+        Object.defineProperty(__lx_proxy__, 'currentScriptInfo', {
+          value: ${JSON.stringify(ownScriptInfo)},
+          writable: false,
+          configurable: true,
+        })
+      } catch (_) {}
+
+      // ⭐ 修复：包装 request 时绑定 lxRef，避免 this 丢失
       if (typeof __makeRequestWrapper__ === 'function' && __lx_proxy__.request) {
         try {
-          __lx_proxy__.request = __makeRequestWrapper__(__lx_proxy__.request)
+          __lx_proxy__.request = __makeRequestWrapper__(__lx_proxy__.request, __origin_lx)
         } catch (_) {}
       }
 
@@ -355,6 +409,7 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
   }
 
   // ⭐ 块 A：放宽探测（超时 8s、Range 1KB、最小 4 字节、三态返回）
+  // ⭐ 修复：删除 binary:true（LX 的 request 不支持），改用 resp.rawBody
   function __probeUrl__(url) {
     return new Promise(function (resolve) {
       var timer = setTimeout(function () { resolve(null) }, 8000)
@@ -363,31 +418,19 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
           method: 'GET',
           headers: { 'Range': 'bytes=0-1023' },
           timeout: 8000,
-          binary: true,
         }, function (err, resp) {
           clearTimeout(timer)
 
-          // ① 明确失败：连接错误 / 无响应
           if (err || !resp) return resolve(null)
+          if (resp.statusCode < 200 || resp.statusCode >= 400) return resolve(null)
 
-          // ② 明确失败：HTTP 4xx / 5xx
-          if (resp.statusCode < 200 || resp.statusCode >= 400) {
-            return resolve(null)
-          }
+          var __raw__ = (resp.rawBody != null) ? resp.rawBody : resp.body
+          var buf = __bodyToBuffer__(__raw__)
 
-          var buf = __bodyToBuffer__(resp.body)
-
-          // ③ 能连上，但数据太短，无法识别格式 → 视作可用
-          if (!buf || buf.length < 4) {
-            return resolve('__UNKNOWN_OK__')
-          }
+          if (!buf || buf.length < 4) return resolve('__UNKNOWN_OK__')
 
           var q = __detectQuality__(buf)
-
-          // ④ 能连上，但识别不出格式 → 视作可用
           if (!q) return resolve('__UNKNOWN_OK__')
-
-          // ⑤ 识别出具体音质
           return resolve(q)
         })
       } catch (e) {
@@ -408,32 +451,44 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     const reqIdx = requested ? __qualityIndex__(requested) : 99
     const errors = []
 
+    // ⭐ 修复：补齐 musicInfo 跨平台 ID 字段
+    var __innerParams__ = params
+    if (params.info && params.info.musicInfo) {
+      var __src__ = params.info.musicInfo
+      var __norm__ = Object.assign({}, __src__)
+      var __sid__ = __src__.songmid || __src__.hash || __src__.id || __src__.songId || __src__.rid || __src__.musicId || ''
+      if (__sid__) {
+        if (!__norm__.songmid) __norm__.songmid = __sid__
+        if (!__norm__.hash)    __norm__.hash    = __sid__
+        if (!__norm__.id)      __norm__.id      = __sid__
+        if (!__norm__.songId)  __norm__.songId  = __sid__
+        if (!__norm__.rid)     __norm__.rid     = __sid__
+      }
+      __innerParams__ = Object.assign({}, params, {
+        info: Object.assign({}, params.info, { musicInfo: __norm__ })
+      })
+    }
+
     for (const fileIdx of priorityList) {
       const h = __handlers__.find(function (x) { return x.fileIdx === fileIdx })
       if (!h) continue
       try {
-        const result = await h.handler(params)
+        const result = await h.handler(__innerParams__)
         if (!result) continue
 
         const actual = await __probeUrl__(result)
 
         // ⭐ 块 B：三态判定
-        // ① 明确失败 → 跳过
         if (actual === null) {
           errors.push('[源' + (fileIdx + 1) + '] 探测失败')
           continue
         }
-
-        // ② 能连上但未知格式 → 直接视作可用
         if (actual === '__UNKNOWN_OK__') {
           return result
         }
-
-        // ③ 识别出具体音质 → 走原音质判定
         if (__qualityIndex__(actual) <= reqIdx) {
           return result
         }
-
         errors.push('[源' + (fileIdx + 1) + '] 降级 ' + requested + '→' + actual)
       } catch (e) {
         errors.push('[源' + (fileIdx + 1) + '] ' + (e && e.message ? e.message : String(e)))
@@ -444,7 +499,7 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
       const firstIdx = priorityList[0]
       const h0 = __handlers__.find(function (x) { return x.fileIdx === firstIdx })
       if (h0) {
-        const fallback = await h0.handler(params)
+        const fallback = await h0.handler(__innerParams__)
         if (fallback) return fallback
       }
     } catch (e) {}
@@ -455,10 +510,18 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     throw new Error('平台 ' + source + ' 全部失败: ' + errors.slice(0, 8).join(' | '))
   })
 
-  __origin_lx.send(EVENT_NAMES.inited, {
-    openDevTools: false,
-    sources: ${JSON.stringify(mergedSources, null, 6)}
-  })
+  // ⭐ 修复：send(inited) 加 status:true + 3 秒延迟（等异步音源初始化）
+  setTimeout(function () {
+    try {
+      __origin_lx.send(EVENT_NAMES.inited, {
+        status: true,
+        openDevTools: false,
+        sources: ${JSON.stringify(mergedSources, null, 6)}
+      })
+    } catch (e) {
+      console.error('[合并音源] 发送 inited 失败:', e && e.message ? e.message : e)
+    }
+  }, 3000)
 })()
 `
 
