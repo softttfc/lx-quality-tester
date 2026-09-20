@@ -224,4 +224,261 @@
   }
 
   function updateDownloadButton() {
-    const
+    const btn = $('discBtnDownload')
+    if (!btn) return
+    btn.disabled = checked.size === 0 || scanning
+  }
+
+  // ---------------- 扫描 ----------------
+  async function doScan() {
+    if (scanning) return
+    if (!repos.length) { alert('候选仓库列表为空'); return }
+
+    const mode = document.querySelector('input[name="discMode"]:checked')
+    const noDedupe = mode && mode.value === 'all'
+
+    const params = {
+      repos,
+      token: $('discToken').value.trim(),
+      repoWorkers: parseInt($('discRepoWorkers').value, 10) || 6,
+      fileWorkers: parseInt($('discFileWorkers').value, 10) || 8,
+      limit: parseInt($('discLimit').value, 10) || 40,
+      timeout: parseFloat($('discTimeout').value) || 8,
+      noDedupe,
+    }
+
+    scanning = true
+    $('discBtnScan').disabled = true
+    $('discBtnCancel').disabled = false
+    checked.clear()
+    setStatus('扫描中...')
+    clearLog()
+
+    if (unsubscribe) unsubscribe()
+    unsubscribe = window.api.onDiscoverProgress((p) => {
+      if (p.type === 'scan-start') log('info', `开始扫描 ${p.repos} 个仓库`)
+      else if (p.type === 'repo-start') log('info', `>>> 扫描仓库 ${p.repo} (${p.branch})`)
+      else if (p.type === 'repo-tree') log('info', `[${p.repo}] 文件树 ${p.totalFiles} 项，候选 ${p.candidates} 个`)
+      else if (p.type === 'file-progress') {
+        if (p.status === 'fail') log('error', `  x ${p.repo}/${p.path}`)
+      } else if (p.type === 'notice') log('warn', `  · ${p.message}`)
+      else if (p.type === 'repo-error') log('error', `  x ${p.repo}: ${p.error}`)
+      else if (p.type === 'repo-done') log('info', `[${p.repo}] 完成，共 ${p.count} 条`)
+      else if (p.type === 'scan-done') log('info', `扫描完成：原始 ${p.found} 条，显示 ${p.shown} 条，API ${p.apiCalls} 次`)
+    })
+
+    try {
+      const r = await window.api.discoverScan(params)
+      rawResult = r
+      renderResults(r.records)
+      setStatus(`扫描完成：原始 ${r.found} 条，显示 ${r.shown} 条`)
+      for (const m of (r.messages || [])) log('info', m)
+    } catch (err) {
+      log('error', '扫描失败：' + (err.message || err))
+      setStatus('扫描失败：网络不可达，请检查代理或稍后重试')
+    } finally {
+      scanning = false
+      $('discBtnScan').disabled = false
+      $('discBtnCancel').disabled = true
+      updateDownloadButton()
+      if (unsubscribe) { unsubscribe(); unsubscribe = null }
+    }
+  }
+
+  async function doCancel() {
+    try {
+      await window.api.discoverCancel()
+      log('warn', '已请求取消扫描')
+    } catch (_) {}
+  }
+
+  // ---------------- 下载 ----------------
+  async function doDownload() {
+    if (!checked.size) return
+    const targetDir = $('discDownloadDir').value.trim()
+    if (!targetDir) { alert('请先设置下载目录'); return }
+
+    const forceFailed = $('discForceFailed').checked
+    const selected = [...checked].map((i) => currentView[i]).filter(Boolean)
+
+    if (!confirm(`即将下载 ${selected.length} 个音源到：\n${targetDir}\n\n继续？`)) return
+
+    $('discBtnDownload').disabled = true
+    setStatus('下载中...')
+
+    try {
+      const r = await window.api.discoverDownload({
+        records: selected,
+        targetDir,
+        timeout: parseFloat($('discTimeout').value) || 8,
+        forceFailed,
+      })
+      if (!r.ok) {
+        log('error', '下载失败：' + (r.error || '未知'))
+        setStatus('下载失败')
+        return
+      }
+      const s = r.stats
+      log('info', `下载完成：新增 ${s.ok} / 跳过 ${s.skipped} / 重复 ${s.duplicate} / 冲突 ${s.conflict} / 抓取失败跳过 ${s.deadSkipped} / 失败 ${s.failed}`)
+      setStatus(`下载完成：新增 ${s.ok}，冲突 ${s.conflict}，失败 ${s.failed}`)
+
+      // 标记已下载
+      const okNames = new Set(s.details.filter((d) => d.status === 'ok').map((d) => d.name))
+      const okFiles = new Map(s.details.filter((d) => d.status === 'ok').map((d) => [d.name, d.file]))
+      for (const rec of selected) {
+        if (rec.downloaded) continue
+        if (okNames.has(rec.name)) {
+          rec.downloaded = true
+          rec.downloaded_file = okFiles.get(rec.name) || ''
+        }
+      }
+      renderResults(currentView)
+    } catch (err) {
+      log('error', '下载异常：' + (err.message || err))
+    } finally {
+      updateDownloadButton()
+    }
+  }
+
+  // ---------------- JSON 导出 ----------------
+  async function doExportJson() {
+    if (!rawResult) { alert('请先执行扫描'); return }
+    const payload = {
+      tool: 'lx-discover',
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      repos: rawResult.repos,
+      found: rawResult.found,
+      shown: rawResult.shown,
+      apiCalls: rawResult.apiCalls,
+      records: currentView.map((r) => ({ ...r })),
+    }
+    try {
+      const r = await window.api.discoverExportJson(JSON.stringify(payload, null, 2))
+      if (r && r.ok) log('info', '已导出：' + r.path)
+      else if (r && r.error) log('error', '导出失败：' + r.error)
+      else log('warn', '已取消导出')
+    } catch (err) {
+      log('error', '导出失败：' + (err.message || err))
+    }
+  }
+
+  // ---------------- 仓库操作 ----------------
+  async function addRepo() {
+    const input = $('discNewRepo').value.trim()
+    if (!input) return
+    let parsed = null
+    try {
+      parsed = await window.api.discoverParseRepo(input)
+    } catch (_) {}
+    if (!parsed) { alert('无法解析仓库地址，请输入 owner/repo 或完整 GitHub URL'); return }
+    if (repos.some((r) => r.full_name.toLowerCase() === parsed.full_name.toLowerCase())) {
+      alert('该仓库已在列表中')
+      return
+    }
+    parsed.note = parsed.note || '手动添加'
+    repos.push(parsed)
+    $('discNewRepo').value = ''
+    renderRepoList()
+    await persistConfig()
+  }
+
+  async function delRepo() {
+    const sel = $('discRepoTbody').querySelector('tr.selected')
+    if (!sel) { alert('请先在列表中选择要删除的仓库'); return }
+    const idx = parseInt(sel.dataset.idx, 10)
+    repos.splice(idx, 1)
+    renderRepoList()
+    await persistConfig()
+  }
+
+  async function resetRepos() {
+    if (!confirm('恢复为内置仓库列表？当前自定义列表会被覆盖。')) return
+    try {
+      const cfg = await window.api.discoverResetRepos()
+      repos = cfg.repos || []
+      renderRepoList()
+      await persistConfig()
+    } catch (_) {}
+  }
+
+  function moveRepo(dir) {
+    const sel = $('discRepoTbody').querySelector('tr.selected')
+    if (!sel) return
+    const idx = parseInt(sel.dataset.idx, 10)
+    const target = idx + dir
+    if (target < 0 || target >= repos.length) return
+    const tmp = repos[idx]
+    repos[idx] = repos[target]
+    repos[target] = tmp
+    renderRepoList()
+    const newSel = $('discRepoTbody').querySelector(`tr[data-idx="${target}"]`)
+    if (newSel) newSel.classList.add('selected')
+    persistConfig()
+  }
+
+  // ---------------- 初始化 ----------------
+  async function init() {
+    if (initialized) return
+    const container = $('discoverContainer')
+    if (!container) return
+    initialized = true
+
+    container.innerHTML = PANEL_HTML
+
+    try {
+      const cfg = await window.api.discoverLoadRepos()
+      repos = cfg.repos || []
+      $('discDownloadDir').value = cfg.downloadDir || ''
+      $('discRepoWorkers').value = cfg.repoWorkers || 6
+      $('discFileWorkers').value = cfg.fileWorkers || 8
+      $('discLimit').value = cfg.limit || 40
+      $('discTimeout').value = cfg.timeout || 8
+      renderRepoList()
+    } catch (err) {
+      console.error('[discover] 初始化失败', err)
+    }
+
+    $('discBtnScan').addEventListener('click', doScan)
+    $('discBtnCancel').addEventListener('click', doCancel)
+    $('discBtnDownload').addEventListener('click', doDownload)
+    $('discBtnExportJson').addEventListener('click', doExportJson)
+    $('discBtnAddRepo').addEventListener('click', addRepo)
+    $('discBtnDelRepo').addEventListener('click', delRepo)
+    $('discBtnMoveUp').addEventListener('click', () => moveRepo(-1))
+    $('discBtnMoveDown').addEventListener('click', () => moveRepo(1))
+    $('discBtnResetRepos').addEventListener('click', resetRepos)
+    $('discBtnClearLog').addEventListener('click', clearLog)
+
+    $('discBtnSelectAll').addEventListener('click', () => {
+      currentView.forEach((_, i) => checked.add(i))
+      renderResults(currentView)
+      updateDownloadButton()
+    })
+    $('discBtnSelectNone').addEventListener('click', () => {
+      checked.clear()
+      renderResults(currentView)
+      updateDownloadButton()
+    })
+
+    $('discBtnPickDir').addEventListener('click', async () => {
+      try {
+        const dir = await window.api.selectSourcesDir()
+        if (dir) {
+          $('discDownloadDir').value = dir
+          persistConfig()
+        }
+      } catch (_) {}
+    })
+
+    for (const id of ['discDownloadDir', 'discRepoWorkers', 'discFileWorkers', 'discLimit', 'discTimeout']) {
+      const el = $(id)
+      if (el) el.addEventListener('change', persistConfig)
+    }
+
+    setStatus('就绪。添加候选仓库后点击“扫描仓库”。')
+    log('info', '检索标签页已就绪。状态列只会出现「已扫描 / 抓取失败」。')
+  }
+
+  window.initDiscoverTab = init
+})()
