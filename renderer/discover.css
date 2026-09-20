@@ -1,0 +1,182 @@
+/* 顶部 tab 栏（与原质量测试页共用） */
+.tabs {
+  display: flex;
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 0 16px;
+  flex-shrink: 0;
+}
+.tab {
+  padding: 10px 20px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: #666;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  width: auto;
+  margin-bottom: 0;
+  border-radius: 0;
+}
+.tab:hover { color: #007aff; background: transparent; }
+.tab.active {
+  color: #007aff;
+  border-bottom-color: #007aff;
+  font-weight: 500;
+}
+.tab-panel { display: none; height: 100%; }
+.tab-panel.active { display: flex; flex-direction: column; }
+
+/* 检索标签页主容器 */
+.discover-tab {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+.disc-sidebar {
+  width: 380px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.disc-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  min-width: 0;
+}
+.disc-panel {
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.disc-panel > label {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.disc-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.disc-row input { margin-bottom: 0; }
+.disc-hint { font-size: 11px; color: #999; }
+.disc-btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.disc-btn-row button {
+  width: auto;
+  flex: 1;
+  min-width: 60px;
+  margin-bottom: 0;
+}
+
+/* 仓库列表 */
+.disc-repo-table-wrap {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+}
+.disc-repo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.disc-repo-table th,
+.disc-repo-table td {
+  padding: 4px 6px;
+  text-align: left;
+  border-bottom: 1px solid #f5f5f5;
+}
+.disc-repo-table th {
+  background: #f9f9f9;
+  position: sticky;
+  top: 0;
+  font-weight: normal;
+  color: #999;
+}
+.disc-repo-table tr.selected { background: #e6f2ff; }
+.disc-repo-table tr { cursor: pointer; }
+
+/* 显示模式 */
+.disc-mode-row { display: flex; gap: 12px; font-size: 12px; }
+.disc-mode-row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.disc-mode-row input { width: auto; margin: 0; }
+
+/* 结果表格 */
+.disc-result-wrap {
+  flex: 1;
+  overflow: auto;
+  background: #fff;
+  border-radius: 8px;
+  min-height: 0;
+}
+.disc-result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.disc-result-table th,
+.disc-result-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid #f5f5f5;
+  white-space: nowrap;
+}
+.disc-result-table th {
+  background: #f9f9f9;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-weight: normal;
+  color: #666;
+}
+.disc-result-table th:nth-child(11),
+.disc-result-table td:nth-child(11) {
+  white-space: normal;
+  max-width: 320px;
+}
+.disc-result-table input.disc-cb {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+.disc-status-ok { color: #34c759; }
+.disc-status-fail { color: #ff3b30; }
+
+.disc-status-bar {
+  padding: 6px 10px;
+  background: #f9f9f9;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #666;
+  margin-top: 6px;
+}
+
+/* 日志 */
+.disc-log {
+  height: 150px;
+  overflow-y: auto;
+  background: #1e1e1e;
+  color: #ddd;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.disc-log-line { white-space: pre-wrap; word-break: break-all; }
+.disc-log-info { color: #d0d0d0; }
+.disc-log-warn { color: #ffb84d; }
+.disc-log-error { color: #ff6b6b; }
