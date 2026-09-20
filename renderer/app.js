@@ -899,3 +899,35 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
 }
+
+// ═══════════════════════════════════════════════════════
+// ⭐ 新增：标签页切换（音源质量测试 / 音源检索）
+//   仅切换 display，不重排、不销毁原有质量测试 DOM；
+//   首次进入检索页时调用 window.initDiscoverTab() 做懒初始化。
+// ═══════════════════════════════════════════════════════
+;(function initTabs() {
+  const tabs = document.querySelectorAll('.tabs .tab')
+  const panels = document.querySelectorAll('.tab-content .tab-panel')
+  if (!tabs.length || !panels.length) return
+
+  let discoverInitialized = false
+
+  function activate(name) {
+    tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name))
+    panels.forEach((p) => p.classList.toggle('active', p.dataset.tab === name))
+    if (name === 'discover' && !discoverInitialized) {
+      discoverInitialized = true
+      if (typeof window.initDiscoverTab === 'function') {
+        try {
+          window.initDiscoverTab()
+        } catch (err) {
+          console.error('[discover] 初始化失败', err)
+        }
+      }
+    }
+  }
+
+  tabs.forEach((t) => {
+    t.addEventListener('click', () => activate(t.dataset.tab))
+  })
+})()
