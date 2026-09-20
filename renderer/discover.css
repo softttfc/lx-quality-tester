@@ -1,32 +1,7 @@
-/* 顶部 tab 栏（与原质量测试页共用） */
-.tabs {
-  display: flex;
-  background: #fff;
-  border-bottom: 1px solid #e0e0e0;
-  padding: 0 16px;
-  flex-shrink: 0;
-}
-.tab {
-  padding: 10px 20px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: 13px;
-  color: #666;
-  border-bottom: 2px solid transparent;
-  transition: all 0.2s;
-  width: auto;
-  margin-bottom: 0;
-  border-radius: 0;
-}
-.tab:hover { color: #007aff; background: transparent; }
-.tab.active {
-  color: #007aff;
-  border-bottom-color: #007aff;
-  font-weight: 500;
-}
-.tab-panel { display: none; height: 100%; }
-.tab-panel.active { display: flex; flex-direction: column; }
+/* ═══════════════════════════════════════════════════════
+   注意：.tabs / .tab / .tab-content / .tab-panel 的样式
+   全部集中在 style.css 中，本文件不再重复定义，避免冲突。
+   ═══════════════════════════════════════════════════════ */
 
 /* 检索标签页主容器 */
 .discover-tab {
