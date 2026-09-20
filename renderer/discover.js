@@ -67,8 +67,7 @@
       <div class="disc-btn-row">
         <button id="discBtnAddRepo" class="secondary">添加</button>
         <button id="discBtnDelRepo">删除选中</button>
-        <button id="discBtnMoveUp">上移</button>
-        <button id="discBtnMoveDown">下移</button>
+        <button id="discBtnEditRepos">编辑列表</button>
         <button id="discBtnResetRepos">恢复默认</button>
       </div>
     </div>
@@ -151,6 +150,24 @@
 </div>
 `
 
+  // ---------------- 编辑列表弹窗 DOM（挂到 body，避免被容器裁切） ----------------
+  const MODAL_HTML = `
+<div class="disc-modal-mask" id="discEditModal" style="display:none">
+  <div class="disc-modal">
+    <div class="disc-modal-title">编辑候选仓库列表</div>
+    <div class="disc-modal-hint">
+      每行一个仓库，格式：<code>owner/repo</code> 或 <code>owner/repo#branch</code> 或完整 GitHub URL（可带 #branch）。
+      已存在的仓库会保留其标签与备注；解析失败的行会被忽略。
+    </div>
+    <textarea id="discEditTextarea" spellcheck="false"></textarea>
+    <div class="disc-modal-actions">
+      <button id="discEditCancel">取消</button>
+      <button id="discEditSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+`
+
   // ---------------- 仓库列表 ----------------
   function renderRepoList() {
     const tbody = $('discRepoTbody')
@@ -209,7 +226,7 @@
         <td>${escapeHtml(r.author || '-')}</td>
         <td>${humanSize(r.size)}</td>
         <td>${downloaded}</td>
-        <td>${escapeHtml(r.note || r.error || '-')}</td>
+        <td title="${escapeHtml(r.note || r.error || '')}">${escapeHtml(r.note || r.error || '-')}</td>
       </tr>`
     }).join('')
 
@@ -322,7 +339,6 @@
       log('info', `下载完成：新增 ${s.ok} / 跳过 ${s.skipped} / 重复 ${s.duplicate} / 冲突 ${s.conflict} / 抓取失败跳过 ${s.deadSkipped} / 失败 ${s.failed}`)
       setStatus(`下载完成：新增 ${s.ok}，冲突 ${s.conflict}，失败 ${s.failed}`)
 
-      // 标记已下载
       const okNames = new Set(s.details.filter((d) => d.status === 'ok').map((d) => d.name))
       const okFiles = new Map(s.details.filter((d) => d.status === 'ok').map((d) => [d.name, d.file]))
       for (const rec of selected) {
@@ -402,19 +418,66 @@
     } catch (_) {}
   }
 
-  function moveRepo(dir) {
-    const sel = $('discRepoTbody').querySelector('tr.selected')
-    if (!sel) return
-    const idx = parseInt(sel.dataset.idx, 10)
-    const target = idx + dir
-    if (target < 0 || target >= repos.length) return
-    const tmp = repos[idx]
-    repos[idx] = repos[target]
-    repos[target] = tmp
+  // ---------------- 编辑列表（替换原上移/下移） ----------------
+  function openEditModal() {
+    const modal = $('discEditModal')
+    const ta = $('discEditTextarea')
+    if (!modal || !ta) return
+    ta.value = repos.map((r) => {
+      const branch = r.branch || 'main'
+      return branch && branch !== 'main'
+        ? `${r.full_name}#${branch}`
+        : r.full_name
+    }).join('\n')
+    modal.style.display = 'flex'
+    ta.focus()
+    ta.setSelectionRange(0, 0)
+  }
+
+  function closeEditModal() {
+    const modal = $('discEditModal')
+    if (modal) modal.style.display = 'none'
+  }
+
+  async function saveEditedRepoList() {
+    const ta = $('discEditTextarea')
+    if (!ta) return
+    const lines = ta.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    if (!lines.length) { alert('至少保留一个仓库'); return }
+
+    const oldMap = new Map()
+    for (const r of repos) oldMap.set(r.full_name.toLowerCase(), r)
+
+    const next = []
+    const seen = new Set()
+    let skipped = 0
+    for (const line of lines) {
+      let parsed = null
+      try {
+        parsed = await window.api.discoverParseRepo(line)
+      } catch (_) {}
+      if (!parsed) { skipped++; continue }
+      const key = parsed.full_name.toLowerCase()
+      if (seen.has(key)) { skipped++; continue }
+      seen.add(key)
+      const old = oldMap.get(key)
+      if (old) {
+        parsed.tag = old.tag || ''
+        parsed.note = old.note || parsed.note
+      }
+      next.push(parsed)
+    }
+
+    if (!next.length) { alert('没有可解析的仓库地址'); return }
+
+    repos = next
     renderRepoList()
-    const newSel = $('discRepoTbody').querySelector(`tr[data-idx="${target}"]`)
-    if (newSel) newSel.classList.add('selected')
-    persistConfig()
+    closeEditModal()
+    if (skipped > 0) {
+      log('warn', `编辑列表：已忽略 ${skipped} 行无法解析或重复的条目`)
+    }
+    log('info', `编辑列表已保存，共 ${repos.length} 个仓库`)
+    await persistConfig()
   }
 
   // ---------------- 初始化 ----------------
@@ -425,6 +488,13 @@
     initialized = true
 
     container.innerHTML = PANEL_HTML
+
+    // 把编辑弹窗挂到 body，避免被侧栏或容器裁剪
+    if (!$('discEditModal')) {
+      const holder = document.createElement('div')
+      holder.innerHTML = MODAL_HTML
+      document.body.appendChild(holder.firstElementChild)
+    }
 
     try {
       const cfg = await window.api.discoverLoadRepos()
@@ -445,10 +515,20 @@
     $('discBtnExportJson').addEventListener('click', doExportJson)
     $('discBtnAddRepo').addEventListener('click', addRepo)
     $('discBtnDelRepo').addEventListener('click', delRepo)
-    $('discBtnMoveUp').addEventListener('click', () => moveRepo(-1))
-    $('discBtnMoveDown').addEventListener('click', () => moveRepo(1))
+    $('discBtnEditRepos').addEventListener('click', openEditModal)
     $('discBtnResetRepos').addEventListener('click', resetRepos)
     $('discBtnClearLog').addEventListener('click', clearLog)
+
+    $('discEditCancel').addEventListener('click', closeEditModal)
+    $('discEditSave').addEventListener('click', saveEditedRepoList)
+    $('discEditModal').addEventListener('click', (e) => {
+      if (e.target && e.target.id === 'discEditModal') closeEditModal()
+    })
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && $('discEditModal') && $('discEditModal').style.display === 'flex') {
+        closeEditModal()
+      }
+    })
 
     $('discBtnSelectAll').addEventListener('click', () => {
       currentView.forEach((_, i) => checked.add(i))
