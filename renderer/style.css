@@ -667,3 +667,61 @@ details summary {
 .standalone-backend-card .api-body {
   border-top: 1px solid #d0e0f0;
 }
+
+/* ═══════════════════════════════════════════════════════
+   ⭐ 新增：标签页布局（音源质量测试 / 音源检索）
+   仅在文件末尾覆盖 .app 的布局方向，原 .sidebar / .main 样式不变
+   ═══════════════════════════════════════════════════════ */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.tabs {
+  display: flex;
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 0 16px;
+  flex-shrink: 0;
+}
+
+.tab {
+  padding: 10px 20px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: #666;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  width: auto;
+  margin-bottom: 0;
+  border-radius: 0;
+}
+
+.tab:hover {
+  color: #007aff;
+  background: transparent;
+}
+
+.tab.active {
+  color: #007aff;
+  border-bottom-color: #007aff;
+  font-weight: 500;
+}
+
+.tab-content {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.tab-panel {
+  display: none;
+  height: 100%;
+}
+
+.tab-panel.active {
+  display: flex;
+}
