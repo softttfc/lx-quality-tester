@@ -4,119 +4,137 @@
   <meta charset="UTF-8">
   <title>LX 音源质量测试</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="discover.css">
 </head>
 <body>
   <div class="app">
-    <aside class="sidebar">
-      <h1>🎵 LX 音源测试</h1>
+    <!-- ⭐ 标签页切换 -->
+    <div class="tabs">
+      <button class="tab active" data-tab="quality">音源质量测试</button>
+      <button class="tab" data-tab="discover">音源检索</button>
+    </div>
 
-      <div class="section">
-        <label>音源目录</label>
-        <div class="row">
-          <button id="btnSelectDir">选择目录</button>
-        </div>
-        <div id="dirPath" class="path">未选择</div>
-        <div id="fileList" class="file-list"></div>
-      </div>
+    <div class="tab-content">
+      <!-- ═══════════════ 标签页一：音源质量测试（原代码，未改动） ═══════════════ -->
+      <div class="tab-panel active" data-tab="quality">
+        <aside class="sidebar">
+          <h1>🎵 LX 音源测试</h1>
 
-      <div class="section">
-        <label>测试歌曲</label>
-        <input id="songName" placeholder="歌曲名（必填）">
-        <input id="singer" placeholder="歌手（推荐）">
-        <input id="albumName" placeholder="专辑（可选）">
-        <div class="row">
-          <button id="btnSearch" class="secondary">🔍 自动搜索各平台 ID</button>
-        </div>
-        <div id="searchStatus" class="search-status"></div>
-
-        <details id="idDetails">
-          <summary>各平台歌曲 ID（自动填充/手动修改）</summary>
-          <input id="songIdWy" placeholder="网易云 songId">
-          <input id="songIdTx" placeholder="QQ音乐 songmid">
-          <input id="songIdKw" placeholder="酷我 songmid">
-          <input id="songIdKg" placeholder="酷狗 hash">
-          <input id="songIdMg" placeholder="咪咕 copyrightId">
-        </details>
-      </div>
-
-      <div class="section">
-        <label>测试选项</label>
-        <label class="checkbox">
-          <input type="checkbox" id="verifyUrl" checked> 验证 URL 可访问性
-        </label>
-        <div class="row">
-          <label class="inline-label">请求间隔(ms)</label>
-          <input type="number" id="delay" value="200" min="0" step="50">
-        </div>
-      </div>
-
-      <div class="section">
-        <button id="btnStart" class="primary">开始测试</button>
-        <button id="btnSave" disabled>💾 导出报告</button>
-      </div>
-
-      <div class="section">
-        <label>风险汇总</label>
-        <div id="riskSummary" class="risk-summary">
-          <div class="risk-stat" data-level="high">
-            <span class="num" id="riskCountHigh">0</span>
-            <span class="lbl">🔴 高</span>
+          <div class="section">
+            <label>音源目录</label>
+            <div class="row">
+              <button id="btnSelectDir">选择目录</button>
+            </div>
+            <div id="dirPath" class="path">未选择</div>
+            <div id="fileList" class="file-list"></div>
           </div>
-          <div class="risk-stat" data-level="medium">
-            <span class="num" id="riskCountMedium">0</span>
-            <span class="lbl">🟡 中</span>
+
+          <div class="section">
+            <label>测试歌曲</label>
+            <input id="songName" placeholder="歌曲名（必填）">
+            <input id="singer" placeholder="歌手（推荐）">
+            <input id="albumName" placeholder="专辑（可选）">
+            <div class="row">
+              <button id="btnSearch" class="secondary">🔍 自动搜索各平台 ID</button>
+            </div>
+            <div id="searchStatus" class="search-status"></div>
+
+            <details id="idDetails">
+              <summary>各平台歌曲 ID（自动填充/手动修改）</summary>
+              <input id="songIdWy" placeholder="网易云 songId">
+              <input id="songIdTx" placeholder="QQ音乐 songmid">
+              <input id="songIdKw" placeholder="酷我 songmid">
+              <input id="songIdKg" placeholder="酷狗 hash">
+              <input id="songIdMg" placeholder="咪咕 copyrightId">
+            </details>
           </div>
-          <div class="risk-stat" data-level="low">
-            <span class="num" id="riskCountLow">0</span>
-            <span class="lbl">🟢 低</span>
+
+          <div class="section">
+            <label>测试选项</label>
+            <label class="checkbox">
+              <input type="checkbox" id="verifyUrl" checked> 验证 URL 可访问性
+            </label>
+            <div class="row">
+              <label class="inline-label">请求间隔(ms)</label>
+              <input type="number" id="delay" value="200" min="0" step="50">
+            </div>
           </div>
-          <div class="risk-stat" data-level="clean">
-            <span class="num" id="riskCountClean">0</span>
-            <span class="lbl">⚪ 无</span>
+
+          <div class="section">
+            <button id="btnStart" class="primary">开始测试</button>
+            <button id="btnSave" disabled>💾 导出报告</button>
           </div>
-        </div>
-        <label class="checkbox">
-          <input type="checkbox" id="filterLowRiskOnly"> 只看低风险（隐藏中/高风险）
-        </label>
-        <label class="checkbox">
-          <input type="checkbox" id="filterNoExploit"> 隐藏含越权/破解音源
-        </label>
+
+          <div class="section">
+            <label>风险汇总</label>
+            <div id="riskSummary" class="risk-summary">
+              <div class="risk-stat" data-level="high">
+                <span class="num" id="riskCountHigh">0</span>
+                <span class="lbl">🔴 高</span>
+              </div>
+              <div class="risk-stat" data-level="medium">
+                <span class="num" id="riskCountMedium">0</span>
+                <span class="lbl">🟡 中</span>
+              </div>
+              <div class="risk-stat" data-level="low">
+                <span class="num" id="riskCountLow">0</span>
+                <span class="lbl">🟢 低</span>
+              </div>
+              <div class="risk-stat" data-level="clean">
+                <span class="num" id="riskCountClean">0</span>
+                <span class="lbl">⚪ 无</span>
+              </div>
+            </div>
+            <label class="checkbox">
+              <input type="checkbox" id="filterLowRiskOnly"> 只看低风险（隐藏中/高风险）
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" id="filterNoExploit"> 隐藏含越权/破解音源
+            </label>
+          </div>
+
+          <!-- ⭐ v1.6：后端检测 -->
+          <div class="section">
+            <label>后端检测</label>
+            <div class="hint">检测每个平台的后端（域名）连通性与音质。勾选要<b>保留</b>的后端，未勾选的将在合并时被屏蔽。</div>
+            <button id="btnTestBackends" class="secondary">🎯 检测所有平台后端</button>
+            <div id="backendStatus" class="search-status"></div>
+            <div id="backendSummary" class="backend-summary" style="display:none"></div>
+          </div>
+
+          <div class="section">
+            <label>音源合并</label>
+            <label class="checkbox">
+              <input type="checkbox" id="filterPlainOnly"> 只显示明文音源
+            </label>
+            <div class="hint">在右侧勾选要保留的平台，点击下方生成。<br>过滤开启时，被隐藏的音源不可参与合并。</div>
+            <button id="btnGenerateMerge" class="primary" disabled>🔀 生成合并音源</button>
+            <div id="mergeStatus" class="search-status"></div>
+          </div>
+        </aside>
+
+        <main class="main">
+          <div id="progress" class="progress" style="display:none">
+            <div class="progress-info">
+              <span id="progressText">准备中...</span>
+              <span id="progressPercent">0%</span>
+            </div>
+            <div class="progress-bar"><div id="progressBar"></div></div>
+          </div>
+          <div id="summary" class="summary" style="display:none"></div>
+          <div id="results" class="results">
+            <div class="empty-state">请选择音源目录并点击"开始测试"</div>
+          </div>
+        </main>
       </div>
 
-      <!-- ⭐ v1.6：后端检测 -->
-      <div class="section">
-        <label>后端检测</label>
-        <div class="hint">检测每个平台的后端（域名）连通性与音质。勾选要<b>保留</b>的后端，未勾选的将在合并时被屏蔽。</div>
-        <button id="btnTestBackends" class="secondary">🎯 检测所有平台后端</button>
-        <div id="backendStatus" class="search-status"></div>
-        <div id="backendSummary" class="backend-summary" style="display:none"></div>
+      <!-- ═══════════════ 标签页二：音源检索（新增） ═══════════════ -->
+      <div class="tab-panel" data-tab="discover">
+        <div id="discoverContainer" class="discover-tab"></div>
       </div>
-
-      <div class="section">
-        <label>音源合并</label>
-        <label class="checkbox">
-          <input type="checkbox" id="filterPlainOnly"> 只显示明文音源
-        </label>
-        <div class="hint">在右侧勾选要保留的平台，点击下方生成。<br>过滤开启时，被隐藏的音源不可参与合并。</div>
-        <button id="btnGenerateMerge" class="primary" disabled>🔀 生成合并音源</button>
-        <div id="mergeStatus" class="search-status"></div>
-      </div>
-    </aside>
-
-    <main class="main">
-      <div id="progress" class="progress" style="display:none">
-        <div class="progress-info">
-          <span id="progressText">准备中...</span>
-          <span id="progressPercent">0%</span>
-        </div>
-        <div class="progress-bar"><div id="progressBar"></div></div>
-      </div>
-      <div id="summary" class="summary" style="display:none"></div>
-      <div id="results" class="results">
-        <div class="empty-state">请选择音源目录并点击"开始测试"</div>
-      </div>
-    </main>
+    </div>
   </div>
   <script src="app.js"></script>
+  <script src="discover.js"></script>
 </body>
 </html>
