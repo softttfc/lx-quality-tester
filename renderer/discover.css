@@ -87,19 +87,32 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
+  table-layout: fixed;
 }
 .disc-repo-table th,
 .disc-repo-table td {
   padding: 4px 6px;
   text-align: left;
   border-bottom: 1px solid #f5f5f5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.disc-repo-table th:nth-child(1),
+.disc-repo-table td:nth-child(1) { width: 45%; }
+.disc-repo-table th:nth-child(2),
+.disc-repo-table td:nth-child(2) { width: 18%; }
+.disc-repo-table th:nth-child(3),
+.disc-repo-table td:nth-child(3) { width: 12%; }
+.disc-repo-table th:nth-child(4),
+.disc-repo-table td:nth-child(4) { width: 25%; }
 .disc-repo-table th {
   background: #f9f9f9;
   position: sticky;
   top: 0;
   font-weight: normal;
   color: #999;
+  z-index: 1;
 }
 .disc-repo-table tr.selected { background: #e6f2ff; }
 .disc-repo-table tr { cursor: pointer; }
@@ -126,13 +139,20 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
+  table-layout: fixed;
 }
 .disc-result-table th,
 .disc-result-table td {
-  padding: 6px 8px;
+  padding: 0 8px;
   text-align: left;
   border-bottom: 1px solid #f5f5f5;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  height: 36px;
+  line-height: 36px;
+  max-height: 36px;
 }
 .disc-result-table th {
   background: #f9f9f9;
@@ -142,15 +162,34 @@
   font-weight: normal;
   color: #666;
 }
+/* 列宽（fixed 布局下必须显式指定） */
+.disc-result-table th:nth-child(1),
+.disc-result-table td:nth-child(1) { width: 46px; text-align: center; }
+.disc-result-table th:nth-child(2),
+.disc-result-table td:nth-child(2) { width: 160px; }
+.disc-result-table th:nth-child(3),
+.disc-result-table td:nth-child(3) { width: 160px; }
+.disc-result-table th:nth-child(4),
+.disc-result-table td:nth-child(4) { width: 160px; }
+.disc-result-table th:nth-child(5),
+.disc-result-table td:nth-child(5) { width: 90px; }
+.disc-result-table th:nth-child(6),
+.disc-result-table td:nth-child(6) { width: 80px; }
+.disc-result-table th:nth-child(7),
+.disc-result-table td:nth-child(7) { width: 70px; text-align: center; }
+.disc-result-table th:nth-child(8),
+.disc-result-table td:nth-child(8) { width: 100px; }
+.disc-result-table th:nth-child(9),
+.disc-result-table td:nth-child(9) { width: 80px; }
+.disc-result-table th:nth-child(10),
+.disc-result-table td:nth-child(10) { width: 64px; text-align: center; }
 .disc-result-table th:nth-child(11),
-.disc-result-table td:nth-child(11) {
-  white-space: normal;
-  max-width: 320px;
-}
+.disc-result-table td:nth-child(11) { width: auto; }
 .disc-result-table input.disc-cb {
   width: 14px;
   height: 14px;
   margin: 0;
+  vertical-align: middle;
 }
 .disc-status-ok { color: #34c759; }
 .disc-status-fail { color: #ff3b30; }
@@ -180,3 +219,67 @@
 .disc-log-info { color: #d0d0d0; }
 .disc-log-warn { color: #ffb84d; }
 .disc-log-error { color: #ff6b6b; }
+
+/* ═══════════════════════════════════════════════════════
+   编辑列表弹窗
+   ═══════════════════════════════════════════════════════ */
+.disc-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.disc-modal {
+  width: 560px;
+  max-width: 90vw;
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px 18px 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.disc-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+.disc-modal-hint {
+  font-size: 11px;
+  color: #999;
+  line-height: 1.6;
+}
+.disc-modal-hint code {
+  background: #f5f5f5;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: Consolas, monospace;
+}
+.disc-modal textarea {
+  width: 100%;
+  height: 260px;
+  resize: vertical;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.disc-modal textarea:focus { border-color: #007aff; }
+.disc-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.disc-modal-actions button {
+  width: auto;
+  margin-bottom: 0;
+  min-width: 76px;
+}
