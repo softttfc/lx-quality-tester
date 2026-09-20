@@ -670,8 +670,8 @@ details summary {
 
 /* ═══════════════════════════════════════════════════════
    ⭐ 新增：标签页布局（音源质量测试 / 音源检索）
-   —— 修正版：.tab-panel 用绝对定位填满 .tab-content，
-      使其高度确定，.sidebar / .main 的 overflow-y 才能生效。
+   —— 修正版：.tab-content 使用 flex column，.tab-panel 用 flex:1
+      填满高度，使 .sidebar / .main 高度确定，overflow-y 才能生效。
    ═══════════════════════════════════════════════════════ */
 .app {
   display: flex;
@@ -715,13 +715,16 @@ details summary {
 .tab-content {
   flex: 1;
   min-height: 0;
-  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .tab-panel {
   display: none;
-  position: absolute;
-  inset: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  flex-direction: row;
 }
 
 .tab-panel.active {
