@@ -670,7 +670,8 @@ details summary {
 
 /* ═══════════════════════════════════════════════════════
    ⭐ 新增：标签页布局（音源质量测试 / 音源检索）
-   仅在文件末尾覆盖 .app 的布局方向，原 .sidebar / .main 样式不变
+   —— 修正版：.tab-panel 用绝对定位填满 .tab-content，
+      使其高度确定，.sidebar / .main 的 overflow-y 才能生效。
    ═══════════════════════════════════════════════════════ */
 .app {
   display: flex;
@@ -719,7 +720,8 @@ details summary {
 
 .tab-panel {
   display: none;
-  height: 100%;
+  position: absolute;
+  inset: 0;
 }
 
 .tab-panel.active {
