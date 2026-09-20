@@ -5,6 +5,7 @@ const { testApiSource } = require('./tester')
 const { searchAllPlatforms } = require('./searchService')
 const { analyzeSources, mergeSources } = require('./merger')
 const { testBackends } = require('./backendTester')
+const discover = require('./discover')
 
 let mainWindow = null
 
@@ -37,6 +38,10 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
 })
+
+// ═══════════════════════════════════════════════════════
+// 原有 IPC（音质检测 / 后端检测 / 合并）
+// ═══════════════════════════════════════════════════════
 
 ipcMain.handle('select-sources-dir', async () => {
   const r = await dialog.showOpenDialog({
@@ -140,6 +145,98 @@ ipcMain.handle('merge-sources', async (event, { files, selection, report, blocke
     })
     if (r.filePath) {
       fs.writeFileSync(r.filePath, code, 'utf8')
+      return { ok: true, path: r.filePath }
+    }
+    return { ok: false }
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
+})
+
+// ═══════════════════════════════════════════════════════
+// 新增 IPC：音源检索
+// ═══════════════════════════════════════════════════════
+
+ipcMain.handle('discover-load-repos', async () => {
+  try {
+    return discover.loadConfig()
+  } catch (err) {
+    return {
+      repos: [],
+      downloadDir: '',
+      repoWorkers: 6,
+      fileWorkers: 8,
+      limit: 40,
+      timeout: 8,
+    }
+  }
+})
+
+ipcMain.handle('discover-save-repos', async (event, config) => {
+  try {
+    const file = discover.saveConfig(config || {})
+    return { ok: true, path: file }
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
+})
+
+ipcMain.handle('discover-parse-repo', async (event, text) => {
+  try {
+    return discover.parseRepo(text)
+  } catch (_) {
+    return null
+  }
+})
+
+ipcMain.handle('discover-reset-repos', async () => {
+  try {
+    return discover.resetRepos()
+  } catch (err) {
+    return { repos: [], error: err.message || String(err) }
+  }
+})
+
+ipcMain.handle('discover-scan', async (event, params) => {
+  return await discover.scan(params || {}, (p) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('discover-progress', p)
+    }
+  })
+})
+
+ipcMain.handle('discover-cancel', async () => {
+  try {
+    return discover.cancel()
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
+})
+
+ipcMain.handle('discover-download', async (event, params) => {
+  try {
+    return await discover.download(params || {}, (p) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('discover-progress', p)
+      }
+    })
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
+})
+
+ipcMain.handle('discover-export-json', async (event, content) => {
+  try {
+    const r = await dialog.showSaveDialog({
+      title: '导出检索结果',
+      defaultPath: `lx-discover-${Date.now()}.json`,
+      filters: [
+        { name: 'JSON', extensions: ['json'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    })
+    if (r.filePath) {
+      fs.writeFileSync(r.filePath, content, 'utf8')
       return { ok: true, path: r.filePath }
     }
     return { ok: false }
