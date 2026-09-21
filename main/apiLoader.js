@@ -196,8 +196,8 @@ async function loadApiSource(scriptPath, options = {}) {
   const {
     initTimeout = 15000,
     scriptTimeout = 30000,
-    requestFilter = null,        // ⭐ v1.6 新增
-    logRequests = false,         // ⭐ v1.6 新增
+    requestFilter = null,
+    logRequests = false,
   } = options
 
   let script
@@ -214,6 +214,7 @@ async function loadApiSource(scriptPath, options = {}) {
         risk: { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} },
       },
       getRequestLog: () => [],
+      getInitRequestLog: () => [],
     }
   }
 
@@ -222,8 +223,8 @@ async function loadApiSource(scriptPath, options = {}) {
   const riskInfo = analyzeRisks(script)
   const info = { ...headerInfo, ...plainInfo, risk: riskInfo }
 
-  // ⭐ v1.6：透传 requestFilter 和 logRequests
-  const { lx, handlers, getRequestLog } = createLxSandbox(
+  // ⭐ v1.7：同时取出 getInitRequestLog
+  const { lx, handlers, getRequestLog, getInitRequestLog } = createLxSandbox(
     { ...info, rawScript: script },
     { requestFilter, logRequests }
   )
@@ -292,7 +293,7 @@ async function loadApiSource(scriptPath, options = {}) {
     vm.createContext(sandbox)
     vm.runInContext(script, sandbox, { timeout: scriptTimeout, filename: scriptPath })
   } catch (err) {
-    return { error: `执行失败: ${err.message}`, info, getRequestLog }
+    return { error: `执行失败: ${err.message}`, info, getRequestLog, getInitRequestLog }
   }
 
   const startTime = Date.now()
@@ -305,18 +306,19 @@ async function loadApiSource(scriptPath, options = {}) {
       error: `未触发 inited 事件（等待 ${initTimeout}ms 超时，可能音源内部抛异常）`,
       info,
       getRequestLog,
+      getInitRequestLog,
     }
   }
   const initData = handlers.inited
   if (!initData.sources || typeof initData.sources !== 'object') {
-    return { error: 'inited 事件未声明 sources', info, getRequestLog }
+    return { error: 'inited 事件未声明 sources', info, getRequestLog, getInitRequestLog }
   }
   const sourceCount = Object.keys(initData.sources).length
   if (sourceCount === 0) {
-    return { error: 'inited 事件声明的 sources 为空', info, getRequestLog }
+    return { error: 'inited 事件声明的 sources 为空', info, getRequestLog, getInitRequestLog }
   }
 
-  return { lx, handlers, info, initData, getRequestLog }
+  return { lx, handlers, info, initData, getRequestLog, getInitRequestLog }
 }
 
 module.exports = { loadApiSource, parseScriptHeader, detectPlainSource, analyzeRisks }
