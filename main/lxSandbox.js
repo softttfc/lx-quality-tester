@@ -180,6 +180,14 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
 
       // ⭐ v1.6 新增：请求过滤（供后端隔离测试使用）
       // ⭐ v1.7 兼容 Array 与 Set 两种类型
+      // ⭐ v1.9 修复：拦截时返回"假响应"而不是 null
+      //   ——合并文件里的 Free listen.js / 小熊猫音源.js 会在 if (err) 之前
+      //     直接访问 resp.body，如果传 null 就会在主进程里抛
+      //     TypeError: Cannot read properties of null (reading 'body')
+      //   ——返回结构完整的空响应后：
+      //       检查 err 的源：走 reject 分支（正确）
+      //       不检查 err 的源：得到 ''，而不是崩溃
+      //       检查 statusCode 的源：得到 0，走失败分支
       if (requestFilter && host) {
         const allowed = requestFilter.allowedHosts
         let isAllowed = true
@@ -192,7 +200,13 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         if (!isAllowed) {
           const err = new Error('ECONNREFUSED: blocked by request filter')
           err.code = 'ECONNREFUSED'
-          setImmediate(() => cb(err, null, null))
+          const fakeResp = {
+            statusCode: 0,
+            statusMessage: 'Blocked by request filter',
+            headers: {},
+            body: '',
+          }
+          setImmediate(() => cb(err, fakeResp, fakeResp.body))
           return () => {}
         }
       }
