@@ -43,6 +43,12 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   const handlers = { request: null, inited: null, updateAlert: null }
   const state = { isInitedApi: false, isShowedUpdateAlert: false }
 
+  // ⭐ v1.8：记录脚本启动时间，用于判断请求是否发生在"初始化窗口"内
+  //   窗口内（默认 15 秒）的请求会被 Layer 2 视为"初始化阶段请求"，
+  //   即使它发生在 inited 之后（例如 Free listen.js / 小熊猫音源.js）
+  const scriptStartTime = Date.now()
+  const INIT_WINDOW_MS = options.initWindowMs || 15000
+
   // ⭐ v1.6 新增：请求过滤 + 请求日志
   const requestFilter = options.requestFilter || null
   const logRequests = options.logRequests === true
@@ -159,13 +165,16 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
       const host = extractHost(url)
 
       // ⭐ v1.6 新增：记录请求（带 inited 前/后标记）
-      // ⭐ v1.7 增加 beforeInited 字段，用于 Layer 2 排除「初始化阶段发请求」的子源
+      // ⭐ v1.7 增加 beforeInited 字段
+      // ⭐ v1.8 增加 inInitWindow 字段（脚本启动后 15 秒内为 true）
       if (logRequests && host) {
+        const now = Date.now()
         requestLog.push({
           url,
           host,
-          timestamp: Date.now(),
+          timestamp: now,
           beforeInited: !state.isInitedApi,
+          inInitWindow: (now - scriptStartTime) < INIT_WINDOW_MS,
         })
       }
 
@@ -278,8 +287,10 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
     lx,
     handlers,
     getRequestLog: () => requestLog.slice(),
-    // ⭐ v1.7 新增：仅返回 inited 之前发出的请求，供 Layer 2 判定
-    getInitRequestLog: () => requestLog.filter((r) => r.beforeInited === true),
+    // ⭐ v1.8：改为按 inInitWindow 过滤
+    //   这样能覆盖"inited 之后立即发起、但仍在初始化窗口内"的请求
+    //   （如 Free listen.js / 小熊猫音源.js 的 checkLatestVersion()）
+    getInitRequestLog: () => requestLog.filter((r) => r.inInitWindow === true),
   }
 }
 
