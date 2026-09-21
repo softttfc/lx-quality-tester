@@ -14,25 +14,17 @@ const MEDIA_HOST_PATTERNS = [
   /(^|\.)lxmusic\.xn--fiqs8s$/,
 ]
 
-// ⭐ 方案 A 新增：官方 API 域名白名单
-// 这些域名的请求是"后端 API 调用"，不是"媒体资源下载"
-// 它们和官方媒体 CDN 共享顶级域，但角色完全不同，必须优先识别
+// ⭐ 方案 A：官方 API 域名白名单
 const OFFICIAL_API_PATTERNS = [
-  // 酷我官方 API
   /^(mobi|nmobi|search|www|m)\.kuwo\.cn$/,
-  // QQ 音乐官方 API
   /^(u|ut|c|y|i|music)\.y\.qq\.com$/,
   /^(u|ut|c|y|i|music)\.qq\.com$/,
-  // 网易云官方 API
   /^(interface|interface3|music)\.music\.163\.com$/,
   /^(interface|interface3|music)\.163\.com$/,
-  // 酷狗官方 API
   /^(wwwapi|songsearch|m|www)\.kugou\.com$/,
-  // 咪咕官方 API
   /^(app\.c\.nf|jadeite|music)\.migu\.cn$/,
 ]
 
-// 跨域前置/签名服务白名单：检测时永远放行
 const ALWAYS_ALLOW_PATTERNS = [
   /(^|\.)github\.com$/,
   /(^|\.)githubusercontent\.com$/,
@@ -50,7 +42,6 @@ function extractHost(url) {
 
 function isMediaHost(host) {
   if (!host) return false
-  // ⭐ 方案 A：官方 API 域名优先判定——命中即视为"后端"，不算媒体
   if (OFFICIAL_API_PATTERNS.some((re) => re.test(host))) return false
   return MEDIA_HOST_PATTERNS.some((re) => re.test(host))
 }
@@ -147,7 +138,7 @@ function buildMusicInfo(song, platform) {
 }
 
 /**
- * 探测 URL 的实际音质（复用 tester.js 的能力，简化为本地实现）
+ * 探测 URL 的实际音质
  */
 async function detectActualQuality(url, platform, timeout) {
   if (!url) return null
@@ -168,7 +159,6 @@ async function detectActualQuality(url, platform, timeout) {
     if (res.status < 200 || res.status >= 400) return null
     const buf = Buffer.from(res.data)
     if (!buf || buf.length < 12) return null
-    // FLAC
     if (buf.slice(0, 4).toString('ascii') === 'fLaC') {
       if (buf.length < 42) return 'flac'
       const si = 8
@@ -179,7 +169,6 @@ async function detectActualQuality(url, platform, timeout) {
       if (sr >= 96000 || bd >= 24) return 'hires'
       return 'flac'
     }
-    // MP3
     if (buf.slice(0, 3).toString('ascii') === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)) {
       const tables = {
         v1l3: [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0],
@@ -239,12 +228,11 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
     const qualitys = declared.qualitys || []
     const sortedQ = [...qualitys].sort((a, b) => qualityIndex(a) - qualityIndex(b))
 
-    // ⭐ 扫描全部音质：确保"只在低音质才被调用"的后端也能被发现
     const probeQualities = sortedQ
 
     console.log(`[backendTester] ${file} / ${platform}: 扫描 ${probeQualities.length} 个音质 (${probeQualities.join(', ')})`)
 
-    const hostMap = new Map()  // host -> { host, qualities: Set, url, quality, usable, error }
+    const hostMap = new Map()
 
     // Phase 1：正常跑，收集请求主机
     for (const quality of probeQualities) {
@@ -260,13 +248,14 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
     }
 
     // Phase 2：对每个主机做隔离测试
+    // ⭐ v1.7 修复：allowedHosts 传数组，避免 Array.isArray 判定失败
     const hostList = [...hostMap.values()]
     for (let i = 0; i < hostList.length; i++) {
       const entry = hostList[i]
       const testQuality = [...entry.qualities].sort((a, b) => qualityIndex(a) - qualityIndex(b))[0]
       onProgress({ type: 'backend-host-test', file, platform, host: entry.host, quality: testQuality })
 
-      const allowed = new Set([entry.host])
+      const allowed = [entry.host]
       const isolated = await runOnce(scriptPath, song, platform, testQuality, allowed, timeout)
 
       if (!isolated.url) {
