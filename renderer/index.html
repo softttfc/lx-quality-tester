@@ -15,7 +15,7 @@
     </div>
 
     <div class="tab-content">
-      <!-- ═══════════════ 标签页一：音源质量测试（原代码，未改动） ═══════════════ -->
+      <!-- ═══════════════ 标签页一：音源质量测试 ═══════════════ -->
       <div class="tab-panel active" data-tab="quality">
         <aside class="sidebar">
           <h1>🎵 LX 音源测试</h1>
@@ -38,15 +38,6 @@
               <button id="btnSearch" class="secondary">🔍 自动搜索各平台 ID</button>
             </div>
             <div id="searchStatus" class="search-status"></div>
-
-            <details id="idDetails">
-              <summary>各平台歌曲 ID（自动填充/手动修改）</summary>
-              <input id="songIdWy" placeholder="网易云 songId">
-              <input id="songIdTx" placeholder="QQ音乐 songmid">
-              <input id="songIdKw" placeholder="酷我 songmid">
-              <input id="songIdKg" placeholder="酷狗 hash">
-              <input id="songIdMg" placeholder="咪咕 copyrightId">
-            </details>
           </div>
 
           <div class="section">
@@ -107,7 +98,11 @@
             <label class="checkbox">
               <input type="checkbox" id="filterPlainOnly"> 只显示明文音源
             </label>
-            <div class="hint">在右侧勾选要保留的平台，点击下方生成。<br>过滤开启时，被隐藏的音源不可参与合并。</div>
+            <div class="hint">
+              在右侧勾选要保留的平台，点击下方生成。<br>
+              过滤开启时，被隐藏的音源不可参与合并。<br>
+              <b>初始化阶段发请求</b>的子源会被自动排除。
+            </div>
             <button id="btnGenerateMerge" class="primary" disabled>🔀 生成合并音源</button>
             <div id="mergeStatus" class="search-status"></div>
           </div>
@@ -128,7 +123,7 @@
         </main>
       </div>
 
-      <!-- ═══════════════ 标签页二：音源检索（新增） ═══════════════ -->
+      <!-- ═══════════════ 标签页二：音源检索 ═══════════════ -->
       <div class="tab-panel" data-tab="discover">
         <div id="discoverContainer" class="discover-tab"></div>
       </div>
