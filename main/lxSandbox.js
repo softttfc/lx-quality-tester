@@ -156,16 +156,31 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
       const cb = typeof options === 'function' ? options : callback
       if (typeof cb !== 'function') return () => {}
 
-      // ⭐ v1.6 新增：记录请求
-      if (logRequests) {
-        const host = extractHost(url)
-        if (host) requestLog.push({ url, host, timestamp: Date.now() })
+      const host = extractHost(url)
+
+      // ⭐ v1.6 新增：记录请求（带 inited 前/后标记）
+      // ⭐ v1.7 增加 beforeInited 字段，用于 Layer 2 排除「初始化阶段发请求」的子源
+      if (logRequests && host) {
+        requestLog.push({
+          url,
+          host,
+          timestamp: Date.now(),
+          beforeInited: !state.isInitedApi,
+        })
       }
 
       // ⭐ v1.6 新增：请求过滤（供后端隔离测试使用）
-      if (requestFilter && Array.isArray(requestFilter.allowedHosts)) {
-        const host = extractHost(url)
-        if (host && !requestFilter.allowedHosts.includes(host)) {
+      // ⭐ v1.7 兼容 Array 与 Set 两种类型
+      if (requestFilter && host) {
+        const allowed = requestFilter.allowedHosts
+        let isAllowed = true
+        if (Array.isArray(allowed)) {
+          isAllowed = allowed.includes(host)
+        } else if (allowed instanceof Set) {
+          isAllowed = allowed.has(host)
+        }
+        // 若 allowed 既非 Array 也非 Set，则不启用过滤（兜底）
+        if (!isAllowed) {
           const err = new Error('ECONNREFUSED: blocked by request filter')
           err.code = 'ECONNREFUSED'
           setImmediate(() => cb(err, null, null))
@@ -263,6 +278,8 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
     lx,
     handlers,
     getRequestLog: () => requestLog.slice(),
+    // ⭐ v1.7 新增：仅返回 inited 之前发出的请求，供 Layer 2 判定
+    getInitRequestLog: () => requestLog.filter((r) => r.beforeInited === true),
   }
 }
 
