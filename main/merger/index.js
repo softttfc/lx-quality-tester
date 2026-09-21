@@ -18,15 +18,25 @@ async function analyzeSources(files) {
         name: file.name, path: file.path, content: '',
         sources: {}, risk: emptyRisk(),
         error: `读取失败: ${err.message}`,
+        hasInitRequests: false,
+        initRequests: [],
+        cleanReport: { changed: false, removed: 0, removedItems: [], error: null },
       })
       continue
     }
     const r = await extractSources(file.path)
     results.push({
-      name: file.name, path: file.path, content,
+      name: file.name,
+      path: file.path,
+      // ⭐ v1.7：优先使用 Layer 1 清理后的代码
+      content: r.cleanedCode || content,
       sources: r.sources || {},
       risk: r.risk || emptyRisk(),
       error: r.error || null,
+      // ⭐ v1.7：传递给 UI 与合并阶段的标记
+      hasInitRequests: r.hasInitRequests || false,
+      initRequests: r.initRequests || [],
+      cleanReport: r.cleanReport || { changed: false, removed: 0, removedItems: [], error: null },
     })
   }
   return results
@@ -36,7 +46,7 @@ async function analyzeSources(files) {
  * @param {Array} files
  * @param {Object} selection
  * @param {Object|null} report
- * @param {Object} options ⭐ v1.6 新增：{ blockedHosts: string[] }
+ * @param {Object} options { blockedHosts: string[] }
  */
 function mergeSources(files, selection, report, options = {}) {
   const blockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
