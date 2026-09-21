@@ -13,8 +13,8 @@ const { analyzeRisks } = require('../apiLoader')
 // ═══════════════════════════════════════════════════════
 
 /**
- * 需要识别的装饰性初始化函数名（顶层调用）
- * 这些函数的返回值在顶层表达式语句中被丢弃，删除后不影响 inited 流程
+ * 需要识别的装饰性初始化函数名
+ * 这些函数的返回值在表达式语句中被丢弃，删除后不影响 inited 流程
  */
 const DECORATIVE_FN_NAMES = [
   /^checkUpdate$/i,
@@ -56,7 +56,15 @@ function getCallChainRoot(node) {
 }
 
 /**
- * Layer 1：删除顶层的装饰性初始化调用
+ * Layer 1：删除装饰性初始化调用
+ *
+ * ⭐ v1.8：不再限制必须在 Program 顶层。
+ *   Free listen.js / 小熊猫音源.js 的 checkLatestVersion().then(...)
+ *   位于 IIFE 内部，旧逻辑永远匹配不到。
+ *   这里改为匹配任意层级的独立表达式语句。
+ *   由于装饰性调用几乎都写作"独立表达式语句"（返回值被丢弃），
+ *   不会误伤到变量赋值 / return 等场景。
+ *
  * @param {string} script
  * @returns {{ code: string, report: { changed: boolean, removed: number, removedItems: string[], error: string|null } }}
  */
@@ -82,13 +90,12 @@ function stripDecorativeInitRequests(script) {
     return { code: script, report }
   }
 
-  // 收集所有"顶层 ExpressionStatement"中匹配装饰性函数名的调用
+  // 收集任意层级的 ExpressionStatement 中匹配装饰性函数名的调用
   const toRemove = []
 
   traverse(ast, {
     ExpressionStatement(path) {
-      // 只处理顶层（Program 的直接子节点）
-      if (!path.parent || path.parent.type !== 'Program') return
+      // ⭐ v1.8：不再限制 path.parent.type === 'Program'
       const expr = path.node.expression
       const root = getCallChainRoot(expr)
       if (!root || !t.isIdentifier(root)) return
@@ -109,7 +116,7 @@ function stripDecorativeInitRequests(script) {
     try {
       item.path.remove()
       report.removed++
-      report.removedItems.push(`移除顶层调用 ${item.name}()`)
+      report.removedItems.push(`移除装饰性调用 ${item.name}()`)
     } catch (_) {
       // 忽略单点移除失败
     }
@@ -202,8 +209,8 @@ async function runInSandbox(script, scriptPath) {
  *   {
  *     sources, risk, error,
  *     cleanedCode,       // Layer 1 清理后的代码（失败时回退到原始）
- *     hasInitRequests,   // 清理后仍存在 inited 之前发出的请求
- *     initRequests,      // 具体请求列表 [{ url, host, beforeInited }]
+ *     hasInitRequests,   // 清理后仍存在初始化窗口内发出的请求
+ *     initRequests,      // 具体请求列表 [{ url, host, beforeInited, inInitWindow }]
  *     cleanReport,       // Layer 1 的清理报告
  *   }
  */
@@ -278,7 +285,9 @@ async function extractSources(scriptPath) {
     }
   }
 
-  // 收集 inited 之前发出的请求
+  // 收集初始化窗口内发出的请求
+  // ⭐ v1.8：getInitRequestLog 已改为按 inInitWindow 过滤
+  //   这能覆盖 inited 之后立即发起的装饰性请求（Free listen / 小熊猫）
   const initRequests = result.getInitRequestLog ? result.getInitRequestLog() : []
   const hasInitRequests = initRequests.length > 0
 
