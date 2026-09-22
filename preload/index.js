@@ -9,19 +9,27 @@ contextBridge.exposeInMainWorld('api', {
   saveReport: (content) => ipcRenderer.invoke('save-report', content),
   analyzeSources: (files) => ipcRenderer.invoke('analyze-sources', files),
   mergeSources: (params) => ipcRenderer.invoke('merge-sources', params),
-  testBackends: (params) => ipcRenderer.invoke('test-backends', params),  // ⭐ v1.6
+  testBackends: (params) => ipcRenderer.invoke('test-backends', params),
   onTestProgress: (cb) => {
     const listener = (e, data) => cb(data)
     ipcRenderer.on('test-progress', listener)
     return () => ipcRenderer.removeListener('test-progress', listener)
   },
-  onBackendProgress: (cb) => {  // ⭐ v1.6
+  onBackendProgress: (cb) => {
     const listener = (e, data) => cb(data)
     ipcRenderer.on('backend-progress', listener)
     return () => ipcRenderer.removeListener('backend-progress', listener)
   },
 
-  // ═══════════════ 新增：音源检索 ═══════════════
+  // ⭐ v2.0：影子测试
+  runShadowTest: (params) => ipcRenderer.invoke('run-shadow-test', params),
+  onShadowProgress: (cb) => {
+    const listener = (e, data) => cb(data)
+    ipcRenderer.on('shadow-progress', listener)
+    return () => ipcRenderer.removeListener('shadow-progress', listener)
+  },
+
+  // ═══════════════ 音源检索 ═══════════════
   discoverLoadRepos: () => ipcRenderer.invoke('discover-load-repos'),
   discoverSaveRepos: (config) => ipcRenderer.invoke('discover-save-repos', config),
   discoverParseRepo: (text) => ipcRenderer.invoke('discover-parse-repo', text),
