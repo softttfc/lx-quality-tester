@@ -44,15 +44,89 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   const state = { isInitedApi: false, isShowedUpdateAlert: false }
 
   // ⭐ v1.8：记录脚本启动时间，用于判断请求是否发生在"初始化窗口"内
-  //   窗口内（默认 15 秒）的请求会被 Layer 2 视为"初始化阶段请求"，
-  //   即使它发生在 inited 之后（例如 Free listen.js / 小熊猫音源.js）
   const scriptStartTime = Date.now()
   const INIT_WINDOW_MS = options.initWindowMs || 15000
 
-  // ⭐ v1.6 新增：请求过滤 + 请求日志
+  // ⭐ v1.6：请求过滤 + 请求日志
   const requestFilter = options.requestFilter || null
   const logRequests = options.logRequests === true
   const requestLog = []
+
+  // ═══════════════════════════════════════════════════════
+  // ⭐ 受控定时器：跟踪沙箱内创建的所有 timer，测试完统一清理
+  //   —— 防止脚本挂的 setInterval 泄漏，反过来持有沙箱上下文
+  //      导致批量测试时主进程内存持续攀升 / 静默退出
+  // ═══════════════════════════════════════════════════════
+  const timerHandles = new Set()
+
+  function safeCallback(fn, args, tag) {
+    try {
+      fn.apply(null, args)
+    } catch (e) {
+      console.error(
+        `[lxSandbox] ${tag} 回调异常（已捕获，不影响主进程）:`,
+        e && e.message ? e.message : e
+      )
+    }
+  }
+
+  const trackedSetTimeout = (fn, ms, ...args) => {
+    const id = setTimeout(() => {
+      timerHandles.delete(id)
+      safeCallback(fn, args, 'setTimeout')
+    }, ms)
+    timerHandles.add(id)
+    return id
+  }
+
+  const trackedSetInterval = (fn, ms, ...args) => {
+    const id = setInterval(() => {
+      safeCallback(fn, args, 'setInterval')
+    }, ms)
+    timerHandles.add(id)
+    return id
+  }
+
+  const trackedSetImmediate = (fn, ...args) => {
+    const id = setImmediate(() => {
+      timerHandles.delete(id)
+      safeCallback(fn, args, 'setImmediate')
+    })
+    timerHandles.add(id)
+    return id
+  }
+
+  const clearTrackedTimeout = (id) => {
+    try { clearTimeout(id) } catch (_) {}
+    timerHandles.delete(id)
+  }
+  const clearTrackedInterval = (id) => {
+    try { clearInterval(id) } catch (_) {}
+    timerHandles.delete(id)
+  }
+  const clearTrackedImmediate = (id) => {
+    try { clearImmediate(id) } catch (_) {}
+    timerHandles.delete(id)
+  }
+
+  const timers = {
+    setTimeout: trackedSetTimeout,
+    clearTimeout: clearTrackedTimeout,
+    setInterval: trackedSetInterval,
+    clearInterval: clearTrackedInterval,
+    setImmediate: trackedSetImmediate,
+    clearImmediate: clearTrackedImmediate,
+  }
+
+  function cleanup() {
+    for (const id of timerHandles) {
+      try { clearTimeout(id) } catch (_) {}
+      try { clearInterval(id) } catch (_) {}
+      try { clearImmediate(id) } catch (_) {}
+    }
+    timerHandles.clear()
+    try { requestLog.length = 0 } catch (_) {}
+  }
 
   const lx = {
     EVENT_NAMES,
@@ -164,9 +238,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
 
       const host = extractHost(url)
 
-      // ⭐ v1.6 新增：记录请求（带 inited 前/后标记）
-      // ⭐ v1.7 增加 beforeInited 字段
-      // ⭐ v1.8 增加 inInitWindow 字段（脚本启动后 15 秒内为 true）
       if (logRequests && host) {
         const now = Date.now()
         requestLog.push({
@@ -178,16 +249,7 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         })
       }
 
-      // ⭐ v1.6 新增：请求过滤（供后端隔离测试使用）
-      // ⭐ v1.7 兼容 Array 与 Set 两种类型
-      // ⭐ v1.9 修复：拦截时返回"假响应"而不是 null
-      //   ——合并文件里的 Free listen.js / 小熊猫音源.js 会在 if (err) 之前
-      //     直接访问 resp.body，如果传 null 就会在主进程里抛
-      //     TypeError: Cannot read properties of null (reading 'body')
-      //   ——返回结构完整的空响应后：
-      //       检查 err 的源：走 reject 分支（正确）
-      //       不检查 err 的源：得到 ''，而不是崩溃
-      //       检查 statusCode 的源：得到 0，走失败分支
+      // ⭐ v1.9：请求过滤（拦截时返回"假响应"，避免源内部直接访问 resp.body 抛错）
       if (requestFilter && host) {
         const allowed = requestFilter.allowedHosts
         let isAllowed = true
@@ -196,7 +258,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         } else if (allowed instanceof Set) {
           isAllowed = allowed.has(host)
         }
-        // 若 allowed 既非 Array 也非 Set，则不启用过滤（兜底）
         if (!isAllowed) {
           const err = new Error('ECONNREFUSED: blocked by request filter')
           err.code = 'ECONNREFUSED'
@@ -206,7 +267,14 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             headers: {},
             body: '',
           }
-          setImmediate(() => cb(err, fakeResp, fakeResp.body))
+          // ⭐ cb 用 try/catch 包住，避免脚本回调异常冒泡成未捕获异常
+          trackedSetImmediate(() => {
+            try {
+              cb(err, fakeResp, fakeResp.body)
+            } catch (e) {
+              console.error('[lxSandbox] 拦截回调异常（已捕获，不影响主进程）:', e && e.message ? e.message : e)
+            }
+          })
           return () => {}
         }
       }
@@ -257,11 +325,27 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             headers: res.headers,
             body: data,
           }
-          cb(null, resp, data)
+          // ⭐ 关键修复：脚本回调异常必须被吞掉，否则会成为 unhandledRejection
+          try {
+            cb(null, resp, data)
+          } catch (e) {
+            console.error(
+              '[lxSandbox] 脚本请求回调异常（已捕获，不影响主进程）:',
+              e && e.message ? e.message : e
+            )
+          }
         })
         .catch((err) => {
           if (aborted) return
-          cb(err instanceof Error ? err : new Error(String(err)), null, null)
+          const e = err instanceof Error ? err : new Error(String(err))
+          try {
+            cb(e, null, null)
+          } catch (e2) {
+            console.error(
+              '[lxSandbox] 脚本错误回调异常（已捕获，不影响主进程）:',
+              e2 && e2.message ? e2.message : e2
+            )
+          }
         })
 
       return () => { aborted = true }
@@ -301,10 +385,10 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
     lx,
     handlers,
     getRequestLog: () => requestLog.slice(),
-    // ⭐ v1.8：改为按 inInitWindow 过滤
-    //   这样能覆盖"inited 之后立即发起、但仍在初始化窗口内"的请求
-    //   （如 Free listen.js / 小熊猫音源.js 的 checkLatestVersion()）
     getInitRequestLog: () => requestLog.filter((r) => r.inInitWindow === true),
+    // ⭐ 新增：受控定时器 + 统一清理
+    timers,
+    cleanup,
   }
 }
 
