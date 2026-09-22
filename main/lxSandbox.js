@@ -52,10 +52,11 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   const logRequests = options.logRequests === true
   const requestLog = []
 
+  // ⭐ v2.0：sequence 计数器（每次沙箱内第 N 次请求）
+  let sequenceCounter = 0
+
   // ═══════════════════════════════════════════════════════
   // ⭐ 受控定时器：跟踪沙箱内创建的所有 timer，测试完统一清理
-  //   —— 防止脚本挂的 setInterval 泄漏，反过来持有沙箱上下文
-  //      导致批量测试时主进程内存持续攀升 / 静默退出
   // ═══════════════════════════════════════════════════════
   const timerHandles = new Set()
 
@@ -238,15 +239,25 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
 
       const host = extractHost(url)
 
+      // ⭐ v2.0：创建 requestLog 条目（带生命周期字段）
+      let logEntry = null
       if (logRequests && host) {
         const now = Date.now()
-        requestLog.push({
+        logEntry = {
+          requestId: requestLog.length,
+          sequence: ++sequenceCounter,
           url,
           host,
           timestamp: now,
           beforeInited: !state.isInitedApi,
           inInitWindow: (now - scriptStartTime) < INIT_WINDOW_MS,
-        })
+          endTime: null,
+          duration: null,
+          statusCode: null,
+          status: 'pending',
+          error: null,
+        }
+        requestLog.push(logEntry)
       }
 
       // ⭐ v1.9：请求过滤（拦截时返回"假响应"，避免源内部直接访问 resp.body 抛错）
@@ -267,7 +278,13 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             headers: {},
             body: '',
           }
-          // ⭐ cb 用 try/catch 包住，避免脚本回调异常冒泡成未捕获异常
+          // ⭐ v2.0：补全 logEntry 状态
+          if (logEntry) {
+            logEntry.endTime = Date.now()
+            logEntry.duration = logEntry.endTime - logEntry.timestamp
+            logEntry.status = 'blocked'
+            logEntry.error = 'ECONNREFUSED'
+          }
           trackedSetImmediate(() => {
             try {
               cb(err, fakeResp, fakeResp.body)
@@ -325,7 +342,13 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             headers: res.headers,
             body: data,
           }
-          // ⭐ 关键修复：脚本回调异常必须被吞掉，否则会成为 unhandledRejection
+          // ⭐ v2.0：补全 logEntry 状态
+          if (logEntry) {
+            logEntry.endTime = Date.now()
+            logEntry.duration = logEntry.endTime - logEntry.timestamp
+            logEntry.statusCode = res.status
+            logEntry.status = (res.status >= 200 && res.status < 400) ? 'ok' : 'http-error'
+          }
           try {
             cb(null, resp, data)
           } catch (e) {
@@ -337,6 +360,13 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         })
         .catch((err) => {
           if (aborted) return
+          // ⭐ v2.0：补全 logEntry 状态
+          if (logEntry) {
+            logEntry.endTime = Date.now()
+            logEntry.duration = logEntry.endTime - logEntry.timestamp
+            logEntry.status = 'fail'
+            logEntry.error = (err && err.message) ? err.message : String(err)
+          }
           const e = err instanceof Error ? err : new Error(String(err))
           try {
             cb(e, null, null)
@@ -386,7 +416,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
     handlers,
     getRequestLog: () => requestLog.slice(),
     getInitRequestLog: () => requestLog.filter((r) => r.inInitWindow === true),
-    // ⭐ 新增：受控定时器 + 统一清理
     timers,
     cleanup,
   }
