@@ -1,6 +1,6 @@
 /**
  * 生成合并后的音源文件
- * @version 1.1.0
+ * @version 1.2.0
  */
 
 const { applyBackendBlacklist } = require('./backendBlocker')
@@ -14,15 +14,12 @@ const QUALITY_RANK = [
 // 【块 C】受保护域名（防止用户误屏蔽官方 API / 媒体 CDN）
 // ═══════════════════════════════════════════════════════
 const PROTECTED_HOST_PATTERNS = [
-  // 官方 API
   /(^|\.)y\.qq\.com$/,
   /(^|\.)music\.163\.com$/,
   /(^|\.)kugou\.com$/,
   /(^|\.)kuwo\.cn$/,
   /(^|\.)migu\.cn$/,
   /^music-api\.gdstudio\.xyz$/,
-
-  // 媒体 CDN
   /(^|\.)m[^.]*\.music\.126\.net$/,
   /^dl\.stream\.qqmusic\.qq\.com$/,
   /(^|\.)kw-[^.]+\.kuwo\.cn$/,
@@ -53,11 +50,6 @@ function filterProtectedHosts(hosts) {
   return kept
 }
 
-/**
- * 从源文件内容中提取 header 注释块（/*! ... *\/）
- * 用于注入 currentScriptInfo.rawScript，让需要解析 @wy_token 之类的源能正常工作
- * 相比嵌入完整源码，能避免生成文件体积翻倍
- */
 function extractHeader(content) {
   if (typeof content !== 'string') return ''
   const m = content.match(/^\/\*![\s\S]*?\*\//)
@@ -87,15 +79,53 @@ function computeScores(report) {
 }
 
 /**
+ * 把 hostScores 里能被 JSON 安全化的部分提取出来（去掉 _meta 和非法值）
+ */
+function sanitizeHostScores(hostScores) {
+  const out = {}
+  if (!hostScores || typeof hostScores !== 'object') return out
+  for (const [host, v] of Object.entries(hostScores)) {
+    if (host === '_meta') continue
+    if (!v || typeof v !== 'object') continue
+    // 只保留数字字段，避免把大对象嵌进生成文件
+    const cleaned = {}
+    const NUMERIC_FIELDS = ['calls', 'ok', 'fail', 'blocked', 'httpError',
+                            'contributions', 'rate', 'avgMs', 'avgOrder', 'contributionRate']
+    for (const f of NUMERIC_FIELDS) {
+      if (typeof v[f] === 'number' && isFinite(v[f])) cleaned[f] = v[f]
+    }
+    if (Object.keys(cleaned).length > 0) out[host] = cleaned
+  }
+  return out
+}
+
+/**
+ * 生成合并后的音源文件
+ *
  * @param {Array} files
  * @param {Object} selection
  * @param {Object|null} report
- * @param {Object} options { blockedHosts: string[] }
+ * @param {Object} options
+ *   {
+ *     backendMode: 'blacklist' | 'score',
+ *     blockedHosts: string[],
+ *     hostScores: Object,
+ *   }
  */
 function generateMergedCode(files, selection, report, options = {}) {
-  // ⭐ 块 C：过滤受保护域名，防止误屏蔽官方 API / 媒体 CDN
+  const backendMode = options.backendMode === 'score' ? 'score' : 'blacklist'
   const rawBlockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
-  const blockedHosts = filterProtectedHosts(rawBlockedHosts)
+  const hostScores = options.hostScores && typeof options.hostScores === 'object' ? options.hostScores : {}
+
+  // ⭐ blacklist 模式：走原有保护过滤
+  // ⭐ score 模式：完全不使用 blockedHosts
+  const blockedHosts = backendMode === 'blacklist'
+    ? filterProtectedHosts(rawBlockedHosts)
+    : []
+
+  const sanitizedScores = backendMode === 'score'
+    ? sanitizeHostScores(hostScores)
+    : {}
 
   const scores = computeScores(report)
 
@@ -146,9 +176,14 @@ function generateMergedCode(files, selection, report, options = {}) {
     }
   }
 
+  // 生成文件头注释，标注模式
+  const modeLabel = backendMode === 'score'
+    ? '后端优化：影子评分'
+    : (blockedHosts.length > 0 ? '后端优化：黑名单' : '后端优化：无')
+
   let code = `/*!
  * @name 合并音源
- * @description 由以下音源合并生成（平台优先级已按上次测试结果排序）：
+ * @description 由以下音源合并生成（平台优先级已按上次测试结果排序；${modeLabel}）：
 ${files.map((f, i) => {
   const platforms = selection[i] || []
   const pStr = platforms.length ? ` [${platforms.join(', ')}]` : ' (未使用)'
@@ -164,7 +199,7 @@ ${files.map((f, i) => {
     : ''
   return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}`
 }).join('\n')}
- * @version 1.1.0
+ * @version 1.2.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -199,15 +234,13 @@ ${files.map((f, i) => {
   })()
 `
 
-  // ⭐ 运行时 request 包装器工厂
-  if (blockedHosts.length > 0) {
+  // ═══════════════════════════════════════════════════════
+  // 【模式 1】黑名单：注入 __BLOCKED_HOSTS__ + __makeRequestWrapper__
+  // ═══════════════════════════════════════════════════════
+  if (backendMode === 'blacklist' && blockedHosts.length > 0) {
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【第 3 层】后端黑名单（运行时包装 request）
-  //   - 不改 globalThis.lx.request（read-only）
-  //   - 每个音源在自身 IIFE 里拷贝 lx 后包装
-  //   - 拦截时伪造 ENOTFOUND（伪装成 DNS 失败）
-  //     让源内部的错误处理逻辑能自然跳过这个后端
+  // 【后端黑名单】运行时包装 request
   // ═══════════════════════════════════════════════════════
   var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
   function __makeRequestWrapper__(origRequest, lxRef) {
@@ -233,6 +266,61 @@ ${files.map((f, i) => {
 `
   }
 
+  // ═══════════════════════════════════════════════════════
+  // 【模式 2】影子评分：注入 __HOST_SCORES__ + __scoreHost__ + __makeRequestWrapper__
+  // ═══════════════════════════════════════════════════════
+  if (backendMode === 'score' && Object.keys(sanitizedScores).length > 0) {
+    code += `
+  // ═══════════════════════════════════════════════════════
+  // 【影子评分】基于历史运行数据动态限制低质量后端
+  //   - rate: 成功率；avgMs: 平均耗时；avgOrder: 平均第几次被调用
+  //   - 综合分数 = rate*0.6 + speedScore*0.3 + orderScore*0.1
+  //   - 拦截条件（保守）：分数 < 0.15 且 rate < 0.1 且 calls >= 3
+  // ═══════════════════════════════════════════════════════
+  var __HOST_SCORES__ = ${JSON.stringify(sanitizedScores)}
+  var __scoreCache__ = {}
+  function __scoreHost__(host) {
+    if (__scoreCache__[host] !== undefined) return __scoreCache__[host]
+    var s = __HOST_SCORES__[host]
+    if (!s) return __scoreCache__[host] = 1.0
+    var rateScore = (typeof s.rate === 'number') ? s.rate : 1.0
+    var speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
+    var orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
+    var result = rateScore * 0.6 + speedScore * 0.3 + orderScore * 0.1
+    return __scoreCache__[host] = result
+  }
+
+  function __makeRequestWrapper__(origRequest, lxRef) {
+    return function (url, options, cb) {
+      var cb2 = (typeof options === 'function') ? options : cb
+      try {
+        var hostMatch = String(url).match(/^https?:\\/\\/([^/?#]+)/i)
+        var host = hostMatch ? hostMatch[1].toLowerCase().replace(/:\\d+$/, '') : null
+        if (host) {
+          var s = __HOST_SCORES__[host]
+          if (s) {
+            var score = __scoreHost__(host)
+            var calls = s.calls || 0
+            var rate = (typeof s.rate === 'number') ? s.rate : 1.0
+            if (score < 0.15 && rate < 0.1 && calls >= 3) {
+              var err = new Error('getaddrinfo ENOTFOUND ' + host)
+              err.code = 'ENOTFOUND'
+              err.errno = -3008
+              err.syscall = 'getaddrinfo'
+              err.hostname = host
+              err.blockedByScorer = true
+              if (typeof cb2 === 'function') setImmediate(function () { cb2(err, null, null) })
+              return function () {}
+            }
+          }
+        }
+      } catch (e) {}
+      return origRequest.apply(lxRef || this || __origin_lx, arguments)
+    }
+  }
+`
+  }
+
   code += `
   // ═══════════════════════════════════════════════════════
   // 平台优先级
@@ -247,9 +335,10 @@ ${files.map((f, i) => {
     const platforms = selection[i] || []
     if (platforms.length === 0) continue
 
-    // ⭐ 不再做字符串替换（改由 backendBlocker AST 删除 + 运行时包装兜底）
     let content = file.content
-    if (blockedHosts.length > 0) {
+
+    // ⭐ AST 黑名单删除（仅 blacklist 模式且非空时执行）
+    if (backendMode === 'blacklist' && blockedHosts.length > 0) {
       const r = applyBackendBlacklist(content, blockedHosts)
       if (!r.report.error) {
         content = r.code
@@ -264,8 +353,6 @@ ${files.map((f, i) => {
       .replace(/globalThis\s*\.\s*lx\b/g, '__lx_proxy__')
       .replace(/globalThis\s*\[\s*['"]lx['"]\s*\]/g, '__lx_proxy__')
 
-    // ⭐ 给每个源注入"自己"的 currentScriptInfo
-    //    rawScript 只用 header，避免生成文件体积翻倍
     const ownScriptInfo = {
       name: (file.info && file.info.name) || file.name,
       description: (file.info && file.info.description) || '',
@@ -282,7 +369,6 @@ ${files.map((f, i) => {
   ;(function () {
     const __fileIdx = ${i}
     try {
-      // ⭐ 修复：保留 lx 的原型链与不可枚举属性（env / version / utils 等）
       const __lx_proxy__ = (function () {
         var p
         try { p = Object.create(Object.getPrototypeOf(__origin_lx) || Object.prototype) } catch (_) { p = {} }
@@ -307,7 +393,6 @@ ${files.map((f, i) => {
 
       __lx_proxy__.send = function () {}
 
-      // ⭐ 修复：注入本音源自己的 currentScriptInfo（避免读到合并大文件）
       try {
         Object.defineProperty(__lx_proxy__, 'currentScriptInfo', {
           value: ${JSON.stringify(ownScriptInfo)},
@@ -316,7 +401,6 @@ ${files.map((f, i) => {
         })
       } catch (_) {}
 
-      // ⭐ 修复：包装 request 时绑定 lxRef，避免 this 丢失
       if (typeof __makeRequestWrapper__ === 'function' && __lx_proxy__.request) {
         try {
           __lx_proxy__.request = __makeRequestWrapper__(__lx_proxy__.request, __origin_lx)
@@ -408,8 +492,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     return null
   }
 
-  // ⭐ 块 A：放宽探测（超时 8s、Range 1KB、最小 4 字节、三态返回）
-  // ⭐ 修复：删除 binary:true（LX 的 request 不支持），改用 resp.rawBody
   function __probeUrl__(url) {
     return new Promise(function (resolve) {
       var timer = setTimeout(function () { resolve(null) }, 8000)
@@ -451,7 +533,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     const reqIdx = requested ? __qualityIndex__(requested) : 99
     const errors = []
 
-    // ⭐ 修复：补齐 musicInfo 跨平台 ID 字段
     var __innerParams__ = params
     if (params.info && params.info.musicInfo) {
       var __src__ = params.info.musicInfo
@@ -478,7 +559,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
 
         const actual = await __probeUrl__(result)
 
-        // ⭐ 块 B：三态判定
         if (actual === null) {
           errors.push('[源' + (fileIdx + 1) + '] 探测失败')
           continue
@@ -510,7 +590,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     throw new Error('平台 ' + source + ' 全部失败: ' + errors.slice(0, 8).join(' | '))
   })
 
-  // ⭐ 修复：send(inited) 加 status:true + 3 秒延迟（等异步音源初始化）
   setTimeout(function () {
     try {
       __origin_lx.send(EVENT_NAMES.inited, {
