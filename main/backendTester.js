@@ -14,7 +14,7 @@ const MEDIA_HOST_PATTERNS = [
   /(^|\.)lxmusic\.xn--fiqs8s$/,
 ]
 
-// ⭐ 方案 A：官方 API 域名白名单
+// 官方 API 域名白名单
 const OFFICIAL_API_PATTERNS = [
   /^(mobi|nmobi|search|www|m)\.kuwo\.cn$/,
   /^(u|ut|c|y|i|music)\.y\.qq\.com$/,
@@ -59,6 +59,7 @@ function qualityIndex(q) {
 
 /**
  * 一次带日志记录/过滤的单次请求
+ * ⭐ 使用 try/finally 释放沙箱定时器（此函数调用次数极多，泄漏最严重）
  */
 async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeout) {
   const loaded = await loadApiSource(scriptPath, {
@@ -67,39 +68,47 @@ async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeou
     initTimeout: 10000,
     scriptTimeout: 20000,
   })
-  if (loaded.error) {
-    return { error: loaded.error, url: null, requestHosts: [] }
-  }
-  const { handlers, getRequestLog } = loaded
-  if (!handlers.request) return { error: '无 request 处理器', url: null, requestHosts: [] }
 
-  const r = await new Promise((resolve) => {
-    let done = false
-    const timer = setTimeout(() => {
-      if (!done) { done = true; resolve({ error: '超时' }) }
-    }, timeout)
-    try {
-      const info = { musicInfo: buildMusicInfo(song, platform), type: quality }
-      const ret = handlers.request({ source: platform, action: 'musicUrl', info })
-      if (ret && typeof ret.then === 'function') {
-        ret.then((u) => {
-          if (!done) {
-            done = true; clearTimeout(timer)
-            resolve({ url: typeof u === 'string' ? u : (u && u.url) || null })
-          }
-        }).catch((e) => {
-          if (!done) { done = true; clearTimeout(timer); resolve({ error: (e && e.message) || String(e) }) }
-        })
-      } else {
-        if (!done) { done = true; clearTimeout(timer); resolve({ url: typeof ret === 'string' ? ret : (ret && ret.url) || null }) }
-      }
-    } catch (e) {
-      if (!done) { done = true; clearTimeout(timer); resolve({ error: (e && e.message) || String(e) }) }
+  try {
+    if (loaded.error) {
+      return { error: loaded.error, url: null, requestHosts: [] }
     }
-  })
+    const { handlers, getRequestLog } = loaded
+    if (!handlers.request) return { error: '无 request 处理器', url: null, requestHosts: [] }
 
-  const requestHosts = getRequestLog ? getRequestLog().map((x) => x.host).filter(Boolean) : []
-  return { ...r, requestHosts }
+    const r = await new Promise((resolve) => {
+      let done = false
+      const timer = setTimeout(() => {
+        if (!done) { done = true; resolve({ error: '超时' }) }
+      }, timeout)
+      try {
+        const info = { musicInfo: buildMusicInfo(song, platform), type: quality }
+        const ret = handlers.request({ source: platform, action: 'musicUrl', info })
+        if (ret && typeof ret.then === 'function') {
+          ret.then((u) => {
+            if (!done) {
+              done = true; clearTimeout(timer)
+              resolve({ url: typeof u === 'string' ? u : (u && u.url) || null })
+            }
+          }).catch((e) => {
+            if (!done) { done = true; clearTimeout(timer); resolve({ error: (e && e.message) || String(e) }) }
+          })
+        } else {
+          if (!done) { done = true; clearTimeout(timer); resolve({ url: typeof ret === 'string' ? ret : (ret && ret.url) || null }) }
+        }
+      } catch (e) {
+        if (!done) { done = true; clearTimeout(timer); resolve({ error: (e && e.message) || String(e) }) }
+      }
+    })
+
+    const requestHosts = getRequestLog ? getRequestLog().map((x) => x.host).filter(Boolean) : []
+    return { ...r, requestHosts }
+  } finally {
+    // ⭐ 释放沙箱定时器
+    if (typeof loaded.cleanup === 'function') {
+      try { loaded.cleanup() } catch (_) {}
+    }
+  }
 }
 
 /**
@@ -212,13 +221,27 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
 
   onProgress({ type: 'backend-file-start', file })
 
+  // ⭐ 首次探测：读取 sources 声明，用完立即释放
   const first = await loadApiSource(scriptPath, { logRequests: true })
-  if (first.error) {
-    onProgress({ type: 'backend-file-error', file, error: first.error })
-    return { file, error: first.error, platforms: {} }
+  let declaredSources = {}
+  let firstError = null
+  try {
+    if (first.error) {
+      firstError = first.error
+    } else {
+      declaredSources = (first.initData && first.initData.sources) || {}
+    }
+  } finally {
+    if (typeof first.cleanup === 'function') {
+      try { first.cleanup() } catch (_) {}
+    }
   }
 
-  const declaredSources = (first.initData && first.initData.sources) || {}
+  if (firstError) {
+    onProgress({ type: 'backend-file-error', file, error: firstError })
+    return { file, error: firstError, platforms: {} }
+  }
+
   const toTest = platforms.filter((p) => declaredSources[p])
   const result = {}
 
@@ -248,7 +271,6 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
     }
 
     // Phase 2：对每个主机做隔离测试
-    // ⭐ v1.7 修复：allowedHosts 传数组，避免 Array.isArray 判定失败
     const hostList = [...hostMap.values()]
     for (let i = 0; i < hostList.length; i++) {
       const entry = hostList[i]
