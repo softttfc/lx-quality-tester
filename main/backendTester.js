@@ -60,6 +60,7 @@ function qualityIndex(q) {
 /**
  * 一次带日志记录/过滤的单次请求
  * ⭐ 使用 try/finally 释放沙箱定时器（此函数调用次数极多，泄漏最严重）
+ * ⭐ v2.0：额外返回完整 requestLog（带 duration/statusCode/status）
  */
 async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeout) {
   const loaded = await loadApiSource(scriptPath, {
@@ -71,10 +72,12 @@ async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeou
 
   try {
     if (loaded.error) {
-      return { error: loaded.error, url: null, requestHosts: [] }
+      return { error: loaded.error, url: null, requestHosts: [], requestLog: [] }
     }
     const { handlers, getRequestLog } = loaded
-    if (!handlers.request) return { error: '无 request 处理器', url: null, requestHosts: [] }
+    if (!handlers.request) {
+      return { error: '无 request 处理器', url: null, requestHosts: [], requestLog: [] }
+    }
 
     const r = await new Promise((resolve) => {
       let done = false
@@ -101,10 +104,10 @@ async function runOnce(scriptPath, song, platform, quality, allowedHosts, timeou
       }
     })
 
-    const requestHosts = getRequestLog ? getRequestLog().map((x) => x.host).filter(Boolean) : []
-    return { ...r, requestHosts }
+    const requestLog = getRequestLog ? getRequestLog() : []
+    const requestHosts = requestLog.map((x) => x.host).filter(Boolean)
+    return { ...r, requestHosts, requestLog }
   } finally {
-    // ⭐ 释放沙箱定时器
     if (typeof loaded.cleanup === 'function') {
       try { loaded.cleanup() } catch (_) {}
     }
@@ -213,6 +216,7 @@ async function detectActualQuality(url, platform, timeout) {
 
 /**
  * 主入口：检测一个音源文件所有平台的后端
+ * ⭐ v2.0：为每个 host 额外输出 requestCount / failCount / avgDuration
  */
 async function testBackends(scriptPath, song, options = {}, onProgress = () => {}) {
   const file = path.basename(scriptPath)
@@ -257,20 +261,49 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
 
     const hostMap = new Map()
 
-    // Phase 1：正常跑，收集请求主机
+    // Phase 1：正常跑，收集请求主机 + 统计耗时/状态
     for (const quality of probeQualities) {
       onProgress({ type: 'backend-scan', file, platform, quality })
       const normal = await runOnce(scriptPath, song, platform, quality, null, timeout)
-      for (const host of (normal.requestHosts || [])) {
+
+      // ⭐ v2.0：用完整 requestLog 累积统计（而不是只统计 host 存在）
+      const logs = normal.requestLog && normal.requestLog.length > 0
+        ? normal.requestLog
+        : (normal.requestHosts || []).map((h) => ({ host: h }))
+
+      for (const log of logs) {
+        const host = log.host
+        if (!host) continue
         if (isMediaHost(host)) continue
         if (!hostMap.has(host)) {
-          hostMap.set(host, { host, qualities: new Set(), usable: null, quality: null, url: null, error: null })
+          hostMap.set(host, {
+            host,
+            qualities: new Set(),
+            usable: null,
+            quality: null,
+            url: null,
+            error: null,
+            // ⭐ v2.0 新增统计字段
+            requestCount: 0,
+            failCount: 0,
+            totalMs: 0,
+            durationCount: 0,
+          })
         }
-        hostMap.get(host).qualities.add(quality)
+        const entry = hostMap.get(host)
+        entry.qualities.add(quality)
+        entry.requestCount++
+        if (log.status === 'fail' || log.status === 'http-error') {
+          entry.failCount++
+        }
+        if (typeof log.duration === 'number' && log.duration > 0) {
+          entry.totalMs += log.duration
+          entry.durationCount++
+        }
       }
     }
 
-    // Phase 2：对每个主机做隔离测试
+    // Phase 2：对每个主机做隔离测试（逻辑保持不变）
     const hostList = [...hostMap.values()]
     for (let i = 0; i < hostList.length; i++) {
       const entry = hostList[i]
@@ -291,6 +324,7 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
       }
     }
 
+    // ⭐ v2.0：输出带统计字段的完整结果
     result[platform] = hostList.map((e) => ({
       host: e.host,
       qualities: [...e.qualities].sort((a, b) => qualityIndex(a) - qualityIndex(b)),
@@ -298,6 +332,9 @@ async function testBackends(scriptPath, song, options = {}, onProgress = () => {
       quality: e.quality,
       url: e.url,
       error: e.error,
+      requestCount: e.requestCount || 0,
+      failCount: e.failCount || 0,
+      avgDuration: e.durationCount > 0 ? Math.round(e.totalMs / e.durationCount) : 0,
     }))
   }
 
