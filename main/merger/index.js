@@ -28,12 +28,10 @@ async function analyzeSources(files) {
     results.push({
       name: file.name,
       path: file.path,
-      // ⭐ v1.7：优先使用 Layer 1 清理后的代码
       content: r.cleanedCode || content,
       sources: r.sources || {},
       risk: r.risk || emptyRisk(),
       error: r.error || null,
-      // ⭐ v1.7：传递给 UI 与合并阶段的标记
       hasInitRequests: r.hasInitRequests || false,
       initRequests: r.initRequests || [],
       cleanReport: r.cleanReport || { changed: false, removed: 0, removedItems: [], error: null },
@@ -43,13 +41,24 @@ async function analyzeSources(files) {
 }
 
 /**
+ * ⭐ v2.0：options 新增 backendMode、hostScores
+ *
  * @param {Array} files
  * @param {Object} selection
  * @param {Object|null} report
- * @param {Object} options { blockedHosts: string[] }
+ * @param {Object} options
+ *   {
+ *     backendMode: 'blacklist' | 'score',   // 默认 'blacklist'
+ *     blockedHosts: string[],               // blacklist 模式使用
+ *     hostScores: Object,                   // score 模式使用
+ *   }
  */
 function mergeSources(files, selection, report, options = {}) {
   const blockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
+  const backendMode = options.backendMode === 'score' ? 'score' : 'blacklist'
+  const hostScores = (options.hostScores && typeof options.hostScores === 'object')
+    ? options.hostScores
+    : {}
 
   const prunedFiles = files.map((file, idx) => {
     const keepPlatforms = selection[idx] || []
@@ -65,7 +74,11 @@ function mergeSources(files, selection, report, options = {}) {
     return { ...file, content: r.code, pruneInfo: { removed: r.removed, kept: r.kept } }
   })
 
-  return generateMergedCode(prunedFiles, selection, report, { blockedHosts })
+  return generateMergedCode(prunedFiles, selection, report, {
+    backendMode,
+    blockedHosts,
+    hostScores,
+  })
 }
 
 module.exports = { analyzeSources, mergeSources }
