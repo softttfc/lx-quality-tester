@@ -4,7 +4,6 @@ const fs = require('fs')
 
 // ═══════════════════════════════════════════════════════
 // ⭐ 主进程兜底：任何未处理的 rejection / 异常都不会让 App 静默退出
-//   —— Node 15+ 默认会让进程结束，加了兜底后仅打印日志
 // ═══════════════════════════════════════════════════════
 process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandledRejection（已拦截，防止主进程退出）:', reason)
@@ -17,6 +16,7 @@ const { testApiSource } = require('./tester')
 const { searchAllPlatforms } = require('./searchService')
 const { analyzeSources, mergeSources } = require('./merger')
 const { testBackends } = require('./backendTester')
+const { runShadowTest } = require('./hostScorer')
 const discover = require('./discover')
 
 let mainWindow = null
@@ -146,10 +146,43 @@ ipcMain.handle('test-backends', async (event, { files, song, options }) => {
   }
 })
 
-// ⭐ v1.6：merge-sources 接受 blockedHosts
-ipcMain.handle('merge-sources', async (event, { files, selection, report, blockedHosts }) => {
+// ⭐ v2.0：影子测试
+ipcMain.handle('run-shadow-test', async (event, { files, songs, options }) => {
   try {
-    const code = mergeSources(files, selection, report, { blockedHosts: blockedHosts || [] })
+    if (!Array.isArray(files) || files.length === 0) {
+      return { ok: false, error: '音源列表为空' }
+    }
+    if (!Array.isArray(songs) || songs.length === 0) {
+      return { ok: false, error: '测试歌曲列表为空' }
+    }
+
+    const hostScores = await runShadowTest(files, songs, options || {}, (p) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('shadow-progress', p)
+      }
+    })
+
+    return { ok: true, hostScores }
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
+  }
+})
+
+// ⭐ v2.0：merge-sources 接受 backendMode 和 hostScores
+ipcMain.handle('merge-sources', async (event, {
+  files,
+  selection,
+  report,
+  blockedHosts,
+  backendMode,
+  hostScores,
+}) => {
+  try {
+    const code = mergeSources(files, selection, report, {
+      backendMode: backendMode === 'score' ? 'score' : 'blacklist',
+      blockedHosts: blockedHosts || [],
+      hostScores: hostScores || {},
+    })
     const r = await dialog.showSaveDialog({
       title: '保存合并音源',
       defaultPath: `merged-source-${Date.now()}.js`,
