@@ -1,6 +1,18 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
+
+// ═══════════════════════════════════════════════════════
+// ⭐ 主进程兜底：任何未处理的 rejection / 异常都不会让 App 静默退出
+//   —— Node 15+ 默认会让进程结束，加了兜底后仅打印日志
+// ═══════════════════════════════════════════════════════
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection（已拦截，防止主进程退出）:', reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaughtException（已拦截，防止主进程退出）:', err)
+})
+
 const { testApiSource } = require('./tester')
 const { searchAllPlatforms } = require('./searchService')
 const { analyzeSources, mergeSources } = require('./merger')
@@ -154,7 +166,7 @@ ipcMain.handle('merge-sources', async (event, { files, selection, report, blocke
 })
 
 // ═══════════════════════════════════════════════════════
-// 新增 IPC：音源检索
+// 音源检索 IPC
 // ═══════════════════════════════════════════════════════
 
 ipcMain.handle('discover-load-repos', async () => {
