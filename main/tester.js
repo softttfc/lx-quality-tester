@@ -20,9 +20,6 @@ const QUALITY_RANK = [
 
 // ==================== 播放器请求头模拟 ====================
 
-// 模拟 LX Music 播放器发起的请求头：
-// - wy 平台 CDN 需要空 UA（参考 download.ts 的 WY_MEDIA_HEADERS）
-// - 其他平台需要标准移动端 UA
 const PLAYER_UA_DEFAULT =
   'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36'
 const PLAYER_UA_WY = ''
@@ -35,10 +32,6 @@ function getPlayerUserAgent(source) {
 
 /**
  * 从 URL 拉取前 N 字节并检测实际音质
- * @param {string} url
- * @param {string} source - 'kw' | 'kg' | 'tx' | 'wy' | 'mg'
- * @param {number} bytes
- * @param {number} timeout
  */
 async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
   const result = { accessible: false, quality: null, contentType: null, size: null }
@@ -55,7 +48,13 @@ async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
       maxRedirects: 5,
     })
 
-    if (res.status < 200 || res.status >= 400) return result
+    // ⭐ 修复：非 2xx/3xx 也要销毁流，否则 socket 泄漏
+    if (res.status < 200 || res.status >= 400) {
+      try {
+        if (res.data && typeof res.data.destroy === 'function') res.data.destroy()
+      } catch (_) {}
+      return result
+    }
 
     result.accessible = true
     result.contentType = res.headers['content-type'] || null
@@ -69,13 +68,16 @@ async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
       const finish = () => {
         if (resolved) return
         resolved = true
+        // ⭐ 修复：拿到数据后主动销毁流，避免连接悬挂
+        try {
+          if (res.data && typeof res.data.destroy === 'function') res.data.destroy()
+        } catch (_) {}
         resolve(Buffer.concat(chunks))
       }
       res.data.on('data', (chunk) => {
         chunks.push(chunk)
         total += chunk.length
         if (total >= bytes) {
-          res.data.destroy()
           finish()
         }
       })
@@ -93,12 +95,10 @@ async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
 
 /**
  * 用 ffmpeg 解码前 3 秒，验证 URL 是否真的能播放
- * 更接近 LX Music 播放器行为（完整建立连接 + 解码）
  */
 async function checkPlayableWithFfmpeg(url, source, timeout = 15000) {
   const args = ['-v', 'error', '-nostdin']
 
-  // 非 wy 平台传标准 UA；wy 平台不传（让 ffmpeg 用默认 UA）
   if (source !== 'wy') {
     args.push('-user_agent', PLAYER_UA_DEFAULT)
   }
@@ -126,7 +126,6 @@ async function checkPlayableWithFfmpeg(url, source, timeout = 15000) {
 function detectQualityFromBuffer(buf) {
   if (!buf || buf.length < 12) return null
 
-  // ---- FLAC ----
   if (buf.slice(0, 4).toString('ascii') === 'fLaC') {
     const info = parseFlacStreamInfo(buf)
     if (info) {
@@ -135,31 +134,26 @@ function detectQualityFromBuffer(buf) {
     return 'flac'
   }
 
-  // ---- MP3 (ID3v2 header) ----
   if (buf.slice(0, 3).toString('ascii') === 'ID3') {
     const bitrate = parseMp3Bitrate(buf)
     return mapMp3ToQuality(bitrate)
   }
 
-  // ---- MP3 (frame sync) ----
   if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) {
     const bitrate = parseMp3Bitrate(buf)
     return mapMp3ToQuality(bitrate)
   }
 
-  // ---- M4A / AAC ----
   if (buf.slice(4, 8).toString('ascii') === 'ftyp') {
-    return '128k'  // 简化：M4A 通常是 AAC，按 128k 处理
+    return '128k'
   }
 
-  // ---- OGG ----
   if (buf.slice(0, 4).toString('ascii') === 'OggS') {
-    return 'flac'  // OGG 通常是 Vorbis/Opus，暂按 flac 处理
+    return 'flac'
   }
 
-  // ---- WAV ----
   if (buf.slice(0, 4).toString('ascii') === 'RIFF') {
-    return 'flac'  // WAV 通常是无损
+    return 'flac'
   }
 
   return null
@@ -242,41 +236,25 @@ function isDowngrade(requested, actual) {
 
 // ==================== 音源测试逻辑 ====================
 
-/**
- * 构建 musicInfo，完全模拟 LX Music 的 toOldMusicInfo 行为
- *
- * 关键点：
- * 1. ID 类字段（hash/songId/rid/...）缺失时保持 undefined，
- *    而不是空字符串。否则音源脚本里的 `musicInfo.hash ?? musicInfo.songmid`
- *    不会回退（`??` 只在 null/undefined 时回退）。
- * 2. 不设置 meta 字段（LX Music 传的对象里没有 meta）。
- * 3. 不设置 id 字段（LX Music 传的对象里没有 id）。
- * 4. 按平台白名单设置平台特有字段。
- * 5. 补齐 img / typeUrl / types / _types 字段。
- */
 function buildMusicInfo(song, platform) {
   const p = (song.ids && song.ids[platform]) || {}
-  // 主 ID 兜底顺序：songmid > hash > songId > rid
   const primaryId = p.songmid || p.hash || p.songId || p.rid || ''
 
-  // ⭐ 通用字段（与 LX Music 的 toOldMusicInfo 结构对齐）
   const info = {
     name: song.name || '',
     singer: song.singer || '',
     source: platform,
-    interval: song.interval || null,       // 与 LX 对齐：可能是 null
+    interval: song.interval || null,
     albumName: song.albumName || '',
-    img: '',                                // ⭐ 补齐
-    typeUrl: {},                            // ⭐ 补齐
-    types: [],                              // ⭐ 补齐
-    _types: {},                             // ⭐ 补齐
+    img: '',
+    typeUrl: {},
+    types: [],
+    _types: {},
   }
 
-  // 有值才设置，缺失时保持 undefined（与 LX 行为一致）
   if (primaryId) info.songmid = primaryId
   if (p.albumId) info.albumId = p.albumId
 
-  // ⭐ 按平台白名单设置平台特有字段（与 LX Music 的 switch-case 一致）
   switch (platform) {
     case 'kg':
       if (p.hash) info.hash = p.hash
@@ -292,7 +270,6 @@ function buildMusicInfo(song, platform) {
       if (p.mrcUrl) info.mrcUrl = p.mrcUrl
       if (p.trcUrl) info.trcUrl = p.trcUrl
       break
-    // kw / wy 不加额外字段（与 LX 一致）
   }
 
   return info
@@ -351,131 +328,135 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
   onProgress({ type: 'api-start', file: fileName })
 
   const loaded = await loadApiSource(scriptPath)
-  if (loaded.error) {
-    onProgress({ type: 'api-error', file: fileName, error: loaded.error })
-    return { file: fileName, info: loaded.info || {}, error: loaded.error, platforms: [] }
-  }
 
-  const { handlers, initData, info: scriptInfo } = loaded
-  const declaredSources = initData.sources || {}
-  const toTest = options.platforms && options.platforms.length
-    ? options.platforms.filter((p) => declaredSources[p])
-    : Object.keys(declaredSources)
+  // ⭐ 无论走到哪一步，finally 里都会释放沙箱定时器
+  try {
+    if (loaded.error) {
+      onProgress({ type: 'api-error', file: fileName, error: loaded.error })
+      return { file: fileName, info: loaded.info || {}, error: loaded.error, platforms: [] }
+    }
 
-  const platforms = []
-  for (const platform of toTest) {
-    const declared = declaredSources[platform]
-    if (!declared) continue
+    const { handlers, initData, info: scriptInfo } = loaded
+    const declaredSources = initData.sources || {}
+    const toTest = options.platforms && options.platforms.length
+      ? options.platforms.filter((p) => declaredSources[p])
+      : Object.keys(declaredSources)
 
-    onProgress({ type: 'platform-start', file: fileName, platform, name: declared.name })
-    const qualities = []
-    const qualitys = declared.qualitys || []
+    const platforms = []
+    for (const platform of toTest) {
+      const declared = declaredSources[platform]
+      if (!declared) continue
 
-    const sortedQualities = [...qualitys].sort((a, b) => qualityIndex(a) - qualityIndex(b))
+      onProgress({ type: 'platform-start', file: fileName, platform, name: declared.name })
+      const qualities = []
+      const qualitys = declared.qualitys || []
 
-    for (const quality of sortedQualities) {
-      onProgress({ type: 'quality-start', file: fileName, platform, quality })
-      const t0 = Date.now()
-      const r = await requestMusicUrl(handlers, platform, song, quality, options.timeout || 15000)
-      const url = r.url
-      const urlObtained = !!url
+      const sortedQualities = [...qualitys].sort((a, b) => qualityIndex(a) - qualityIndex(b))
 
-      let urlAccessible = false
-      let actualQuality = null
-      let playable = null
-      let playableError = null
+      for (const quality of sortedQualities) {
+        onProgress({ type: 'quality-start', file: fileName, platform, quality })
+        const t0 = Date.now()
+        const r = await requestMusicUrl(handlers, platform, song, quality, options.timeout || 15000)
+        const url = r.url
+        const urlObtained = !!url
 
-      if (urlObtained) {
-        // 1. 拉前 16KB 探测文件头（模拟播放器请求头）
-        const detected = await fetchAndDetect(
-          url,
-          platform,
-          16384,
-          options.verifyTimeout || 8000
-        )
-        urlAccessible = detected.accessible
-        actualQuality = detected.quality
+        let urlAccessible = false
+        let actualQuality = null
+        let playable = null
+        let playableError = null
 
-        // 2. ffmpeg 验证能否实际解码（默认开启）
-        if (options.enableFfmpegCheck !== false && urlAccessible) {
-          const ff = await checkPlayableWithFfmpeg(
+        if (urlObtained) {
+          const detected = await fetchAndDetect(
             url,
             platform,
-            options.ffmpegTimeout || 15000
+            16384,
+            options.verifyTimeout || 8000
           )
-          playable = ff.playable
-          playableError = ff.error
+          urlAccessible = detected.accessible
+          actualQuality = detected.quality
+
+          if (options.enableFfmpegCheck !== false && urlAccessible) {
+            const ff = await checkPlayableWithFfmpeg(
+              url,
+              platform,
+              options.ffmpegTimeout || 15000
+            )
+            playable = ff.playable
+            playableError = ff.error
+          }
+        }
+
+        const passes = urlAccessible && playable !== false && !isDowngrade(quality, actualQuality)
+        const downgrade = urlAccessible && isDowngrade(quality, actualQuality)
+
+        qualities.push({
+          quality,
+          declared: true,
+          urlObtained,
+          urlAccessible,
+          playable,
+          playableError,
+          actualQuality,
+          downgrade,
+          passes,
+          url: url || null,
+          error: r.error || null,
+          duration: Date.now() - t0,
+        })
+
+        onProgress({
+          type: 'quality-done',
+          file: fileName,
+          platform,
+          quality,
+          urlObtained,
+          urlAccessible,
+          playable,
+          actualQuality,
+          downgrade,
+        })
+
+        await new Promise((res) => setTimeout(res, options.delay || 200))
+      }
+
+      const passed = qualities.filter((q) => q.passes)
+      const downgraded = qualities.filter((q) => q.downgrade)
+      const unplayable = qualities.filter(
+        (q) => q.urlAccessible && q.playable === false
+      )
+      const failed = qualities.filter((q) => !q.urlAccessible)
+
+      const usableQualities = qualities.filter(
+        (q) => q.urlAccessible && q.playable !== false
+      )
+      let bestQuality = null
+      for (const q of usableQualities) {
+        const candidate = q.actualQuality || q.quality
+        if (!bestQuality || qualityIndex(candidate) < qualityIndex(bestQuality)) {
+          bestQuality = candidate
         }
       }
 
-      // ⭐ 只有"可访问 + 可播放 + 不降级"才算通过
-      const passes = urlAccessible && playable !== false && !isDowngrade(quality, actualQuality)
-      const downgrade = urlAccessible && isDowngrade(quality, actualQuality)
-
-      qualities.push({
-        quality,
-        declared: true,
-        urlObtained,
-        urlAccessible,
-        playable,
-        playableError,
-        actualQuality,
-        downgrade,
-        passes,
-        url: url || null,
-        error: r.error || null,
-        duration: Date.now() - t0,
+      platforms.push({
+        source: platform,
+        name: declared.name || platform,
+        available: usableQualities.length > 0,
+        bestQuality,
+        passedCount: passed.length,
+        downgradedCount: downgraded.length,
+        unplayableCount: unplayable.length,
+        failedCount: failed.length,
+        qualities,
       })
-
-      onProgress({
-        type: 'quality-done',
-        file: fileName,
-        platform,
-        quality,
-        urlObtained,
-        urlAccessible,
-        playable,
-        actualQuality,
-        downgrade,
-      })
-
-      await new Promise((res) => setTimeout(res, options.delay || 200))
     }
 
-    // 统计
-    const passed = qualities.filter((q) => q.passes)
-    const downgraded = qualities.filter((q) => q.downgrade)
-    const unplayable = qualities.filter(
-      (q) => q.urlAccessible && q.playable === false
-    )
-    const failed = qualities.filter((q) => !q.urlAccessible)
-
-    // 实际最高音质：只从"可访问 + 可播放"的里取
-    const usableQualities = qualities.filter(
-      (q) => q.urlAccessible && q.playable !== false
-    )
-    let bestQuality = null
-    for (const q of usableQualities) {
-      const candidate = q.actualQuality || q.quality
-      if (!bestQuality || qualityIndex(candidate) < qualityIndex(bestQuality)) {
-        bestQuality = candidate
-      }
+    return { file: fileName, info: scriptInfo, platforms, error: null }
+  } finally {
+    // ⭐ 释放沙箱定时器，避免脚本里挂的 setInterval 泄漏
+    if (typeof loaded.cleanup === 'function') {
+      try { loaded.cleanup() } catch (_) {}
     }
-
-    platforms.push({
-      source: platform,
-      name: declared.name || platform,
-      available: usableQualities.length > 0,
-      bestQuality,
-      passedCount: passed.length,
-      downgradedCount: downgraded.length,
-      unplayableCount: unplayable.length,
-      failedCount: failed.length,
-      qualities,
-    })
   }
-
-  return { file: fileName, info: scriptInfo, platforms, error: null }
 }
 
 async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
