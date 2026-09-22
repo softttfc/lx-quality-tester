@@ -87,10 +87,27 @@
           <!-- ⭐ v1.6：后端检测 -->
           <div class="section">
             <label>后端检测</label>
-            <div class="hint">检测每个平台的后端（域名）连通性与音质。勾选要<b>保留</b>的后端，未勾选的将在合并时被屏蔽。</div>
+            <div class="hint">检测每个平台的后端（域名）连通性与音质。勾选要<b>保留</b>的后端，未勾选的将在"黑名单模式"下被屏蔽。</div>
             <button id="btnTestBackends" class="secondary">🎯 检测所有平台后端</button>
             <div id="backendStatus" class="search-status"></div>
             <div id="backendSummary" class="backend-summary" style="display:none"></div>
+          </div>
+
+          <!-- ⭐ v2.0：影子测试 -->
+          <div class="section">
+            <label>影子测试</label>
+            <div class="hint">
+              真实运行环境下跑音源，收集每个后端的成功率、耗时、调用顺序。<br>
+              生成合并音源时可选"评分模式"来使用这些数据做动态优化。
+            </div>
+            <textarea id="shadowSongs" placeholder="每行一首，格式：歌名 - 歌手&#10;也可以只填歌名（首次会自动搜索各平台 ID）"></textarea>
+            <div class="row" style="gap:6px">
+              <button id="btnUseLastSong" class="secondary" style="flex:1;margin-bottom:0">↩ 用上方歌曲</button>
+              <button id="btnClearShadowSongs" style="flex:1;margin-bottom:0">清空</button>
+            </div>
+            <button id="btnRunShadowTest" class="secondary" style="margin-top:8px">▶️ 运行影子测试</button>
+            <div id="shadowStatus" class="search-status"></div>
+            <div id="shadowSummary" class="shadow-summary" style="display:none"></div>
           </div>
 
           <div class="section">
@@ -98,6 +115,22 @@
             <label class="checkbox">
               <input type="checkbox" id="filterPlainOnly"> 只显示明文音源
             </label>
+
+            <label>合并策略</label>
+            <div class="backend-mode-row">
+              <label>
+                <input type="radio" name="backendMode" value="blacklist" checked>
+                <span>🔒 黑名单模式</span>
+              </label>
+              <div class="mode-hint">用后端检测结果硬屏蔽失效 host</div>
+              <label>
+                <input type="radio" name="backendMode" value="score">
+                <span>📊 评分模式</span>
+              </label>
+              <div class="mode-hint">用影子测试数据动态优化后端调用</div>
+            </div>
+            <div id="backendModeStatus" class="search-status"></div>
+
             <div class="hint">
               在右侧勾选要保留的平台，点击下方生成。<br>
               过滤开启时，被隐藏的音源不可参与合并。<br>
