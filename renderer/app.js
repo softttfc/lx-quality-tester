@@ -9,6 +9,11 @@ let selectedIds = { wy: null, tx: null, kw: null, kg: null, mg: null }
 let backendResults = null
 let backendUnsubscribe = null
 
+// ⭐ v2.0：影子测试与合并策略
+let hostScores = null
+let shadowUnsubscribe = null
+let heavyTestLock = null   // 'backend' | 'shadow' | null —— 两个测试互斥
+
 /* ═════════ 目录选择 ═════════ */
 $('btnSelectDir').addEventListener('click', async () => {
   const dir = await window.api.selectSourcesDir()
@@ -199,7 +204,26 @@ function refreshInitRequestFlags() {
   })
 }
 
-/* ═════════ 后端检测 ═════════ */
+/* ═════════ v2.0：测试互斥锁 ═════════ */
+function acquireHeavyLock(which) {
+  if (heavyTestLock) {
+    const nameMap = { backend: '后端检测', shadow: '影子测试' }
+    alert(`已有测试正在运行：${nameMap[heavyTestLock] || heavyTestLock}`)
+    return false
+  }
+  heavyTestLock = which
+  $('btnTestBackends').disabled = true
+  $('btnRunShadowTest').disabled = true
+  return true
+}
+
+function releaseHeavyLock() {
+  heavyTestLock = null
+  $('btnTestBackends').disabled = false
+  $('btnRunShadowTest').disabled = false
+}
+
+/* ═════════ 后端检测（保留原功能，仅加互斥锁） ═════════ */
 $('btnTestBackends').addEventListener('click', async () => {
   if (!availableFiles.length) return alert('请先选择音源目录')
   const songName = $('songName').value.trim()
@@ -207,6 +231,8 @@ $('btnTestBackends').addEventListener('click', async () => {
 
   const anyId = selectedIds.wy || selectedIds.tx || selectedIds.kw || selectedIds.kg || selectedIds.mg
   if (!anyId) return alert('请先点击「🔍 自动搜索各平台 ID」获取歌曲 ID')
+
+  if (!acquireHeavyLock('backend')) return
 
   const song = {
     name: songName,
@@ -222,7 +248,6 @@ $('btnTestBackends').addEventListener('click', async () => {
     },
   }
 
-  $('btnTestBackends').disabled = true
   $('btnTestBackends').textContent = '检测中...'
   $('backendStatus').textContent = '检测中，请耐心等待（每个音源约需 30~120 秒）...'
   $('backendStatus').style.color = '#007aff'
@@ -254,13 +279,14 @@ $('btnTestBackends').addEventListener('click', async () => {
     injectBackendPanels(r.results)
     $('backendStatus').textContent = `完成：${r.results.length} 个音源`
     $('backendStatus').style.color = '#34c759'
+    updateBackendModeStatus()
   } catch (err) {
     $('backendStatus').textContent = '检测失败: ' + (err.message || err)
     $('backendStatus').style.color = '#ff3b30'
   } finally {
-    $('btnTestBackends').disabled = false
     $('btnTestBackends').textContent = '🎯 检测所有平台后端'
-    if (backendUnsubscribe) backendUnsubscribe()
+    if (backendUnsubscribe) { backendUnsubscribe(); backendUnsubscribe = null }
+    releaseHeavyLock()
   }
 })
 
@@ -504,6 +530,240 @@ function collectBlockedHosts() {
   return [...blocked]
 }
 
+/* ═════════ v2.0：影子测试 ═════════ */
+$('btnUseLastSong').addEventListener('click', () => {
+  const name = $('songName').value.trim()
+  const singer = $('singer').value.trim()
+  if (!name) return alert('请先在上方填写歌曲名')
+  const line = singer ? `${name} - ${singer}` : name
+  const el = $('shadowSongs')
+  const cur = el.value.trim()
+  el.value = cur ? (cur + '\n' + line) : line
+})
+
+$('btnClearShadowSongs').addEventListener('click', () => {
+  $('shadowSongs').value = ''
+})
+
+function parseShadowSongs(text) {
+  const lines = String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  const songs = []
+  for (const line of lines) {
+    let name = ''
+    let singer = ''
+    // 支持 "歌名 - 歌手" / "歌名|歌手" / "歌名—歌手" / "歌名 – 歌手"
+    const m = line.match(/^(.+?)\s*[-|—–]\s*(.+)$/)
+    if (m) {
+      name = m[1].trim()
+      singer = m[2].trim()
+    } else {
+      name = line
+    }
+    if (name) songs.push({ name, singer })
+  }
+  return songs
+}
+
+$('btnRunShadowTest').addEventListener('click', async () => {
+  if (!availableFiles.length) return alert('请先选择音源目录')
+
+  const songLines = parseShadowSongs($('shadowSongs').value)
+  if (songLines.length === 0) {
+    return alert('请至少填写一首测试歌曲（每行一首，格式：歌名 - 歌手）')
+  }
+
+  if (!acquireHeavyLock('shadow')) return
+
+  $('btnRunShadowTest').textContent = '影子测试中...'
+  $('shadowStatus').textContent = '正在搜索歌曲 ID...'
+  $('shadowStatus').style.color = '#007aff'
+  $('shadowSummary').style.display = 'none'
+
+  shadowUnsubscribe = window.api.onShadowProgress((p) => {
+    if (p.type === 'shadow-run') {
+      $('shadowStatus').textContent =
+        `[${p.done + 1}/${p.total}] ${p.file} · ${p.platform} · ${p.song}`
+    } else if (p.type === 'shadow-progress') {
+      const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0
+      $('shadowStatus').textContent = `进度 ${pct}% (${p.done}/${p.total})`
+    } else if (p.type === 'shadow-file-error') {
+      console.warn('[shadow] 音源加载失败:', p.file, p.error)
+    }
+  })
+
+  try {
+    // 1. 对每首歌搜索各平台 ID
+    const songs = []
+    for (let i = 0; i < songLines.length; i++) {
+      const { name, singer } = songLines[i]
+      $('shadowStatus').textContent = `[${i + 1}/${songLines.length}] 搜索 ID：${name}${singer ? ' - ' + singer : ''}`
+      try {
+        const r = await window.api.searchSong({ name, singer })
+        if (r && r.matched) {
+          const ids = {
+            wy: r.matched.wy || null,
+            tx: r.matched.tx || null,
+            kw: r.matched.kw || null,
+            kg: r.matched.kg || null,
+            mg: r.matched.mg || null,
+          }
+          const anyId = ids.wy || ids.tx || ids.kw || ids.kg || ids.mg
+          if (anyId) {
+            songs.push({
+              name,
+              singer,
+              albumName: (ids.wy && ids.wy.albumName) || (ids.tx && ids.tx.albumName) ||
+                         (ids.kw && ids.kw.albumName) || (ids.kg && ids.kg.albumName) ||
+                         (ids.mg && ids.mg.albumName) || '',
+              interval: (ids.wy && ids.wy.interval) || (ids.tx && ids.tx.interval) ||
+                        (ids.kw && ids.kw.interval) || (ids.kg && ids.kg.interval) ||
+                        (ids.mg && ids.mg.interval) || '04:30',
+              ids,
+            })
+          }
+        }
+      } catch (e) {
+        console.warn(`[shadow] 搜索失败: ${name} - ${singer}`, e)
+      }
+    }
+
+    if (songs.length === 0) {
+      $('shadowStatus').textContent = '所有歌曲都搜索不到 ID，无法进行影子测试'
+      $('shadowStatus').style.color = '#ff3b30'
+      return
+    }
+
+    // 2. 运行影子测试
+    $('shadowStatus').textContent = `开始影子测试，共 ${songs.length} 首歌曲 × ${availableFiles.length} 个音源`
+    $('shadowStatus').style.color = '#007aff'
+
+    const r = await window.api.runShadowTest({
+      files: availableFiles,
+      songs,
+      options: { platforms: ['kw', 'kg', 'tx', 'wy', 'mg'], timeout: 15000 },
+    })
+
+    if (!r.ok) {
+      $('shadowStatus').textContent = '影子测试失败: ' + (r.error || '未知错误')
+      $('shadowStatus').style.color = '#ff3b30'
+      return
+    }
+
+    hostScores = r.hostScores
+    renderShadowScorePanel(r.hostScores)
+    const hostCount = Object.keys(r.hostScores).filter(k => k !== '_meta').length
+    $('shadowStatus').textContent = `完成：收集到 ${hostCount} 个 host 的评分数据`
+    $('shadowStatus').style.color = '#34c759'
+    updateBackendModeStatus()
+  } catch (err) {
+    $('shadowStatus').textContent = '影子测试失败: ' + (err.message || err)
+    $('shadowStatus').style.color = '#ff3b30'
+  } finally {
+    $('btnRunShadowTest').textContent = '▶️ 运行影子测试'
+    if (shadowUnsubscribe) { shadowUnsubscribe(); shadowUnsubscribe = null }
+    releaseHeavyLock()
+  }
+})
+
+function computeScore(s) {
+  if (!s || typeof s !== 'object') return 0
+  const rate = typeof s.rate === 'number' ? s.rate : 0
+  const speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
+  const orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
+  return rate * 0.6 + speedScore * 0.3 + orderScore * 0.1
+}
+
+function renderShadowScorePanel(hostScores) {
+  if (!hostScores) return
+  const entries = Object.entries(hostScores).filter(([k]) => k !== '_meta')
+  if (entries.length === 0) {
+    $('shadowSummary').style.display = 'block'
+    $('shadowSummary').innerHTML = '<div style="color:#999;text-align:center;padding:8px">未收集到任何 host 数据</div>'
+    return
+  }
+
+  // 按综合评分降序
+  entries.sort((a, b) => computeScore(b[1]) - computeScore(a[1]))
+
+  const shown = entries.slice(0, 50)
+  const rows = shown.map(([host, s]) => {
+    const score = computeScore(s)
+    const icon = score >= 0.8 ? '🟢' : score >= 0.5 ? '🟡' : '🔴'
+    const rate = ((s.rate || 0) * 100).toFixed(0)
+    return `
+      <div class="shadow-score-row" title="${escapeHtml(host)}">
+        <span class="shadow-score-icon">${icon}</span>
+        <span class="shadow-score-host">${escapeHtml(host)}</span>
+        <span class="shadow-score-num">${s.calls || 0}</span>
+        <span class="shadow-score-num">${rate}%</span>
+        <span class="shadow-score-num">${s.avgMs || 0}ms</span>
+        <span class="shadow-score-num">#${s.avgOrder || 0}</span>
+        <span class="shadow-score-score">${(score * 100).toFixed(0)}</span>
+      </div>`
+  }).join('')
+
+  const meta = hostScores._meta || {}
+  const metaText = meta.testSongCount
+    ? `（${meta.testSongCount} 首歌曲 × ${meta.testFileCount} 个音源）`
+    : ''
+
+  $('shadowSummary').style.display = 'block'
+  $('shadowSummary').innerHTML = `
+    <div class="shadow-stat-header">
+      共 ${entries.length} 个 host${entries.length > 50 ? '，显示前 50 个' : ''} ${metaText}
+    </div>
+    <div class="shadow-score-header">
+      <span class="shadow-score-icon"></span>
+      <span class="shadow-score-host">域名</span>
+      <span class="shadow-score-num">调用</span>
+      <span class="shadow-score-num">成功</span>
+      <span class="shadow-score-num">耗时</span>
+      <span class="shadow-score-num">顺序</span>
+      <span class="shadow-score-score">评分</span>
+    </div>
+    <div class="shadow-score-list">${rows}</div>
+  `
+}
+
+/* ═════════ v2.0：合并策略 ═════════ */
+function getBackendMode() {
+  const el = document.querySelector('input[name="backendMode"]:checked')
+  return el ? el.value : 'blacklist'
+}
+
+function updateBackendModeStatus() {
+  const mode = getBackendMode()
+  const el = $('backendModeStatus')
+  if (!el) return
+
+  if (mode === 'blacklist') {
+    if (backendResults && backendResults.length > 0) {
+      let total = 0
+      for (const r of backendResults) {
+        for (const hosts of Object.values(r.platforms || {})) total += hosts.length
+      }
+      el.textContent = `✓ 后端检测数据已就绪（${total} 个后端）`
+      el.style.color = '#34c759'
+    } else {
+      el.textContent = '⚠ 尚未运行后端检测，生成时将不屏蔽任何后端'
+      el.style.color = '#ff9500'
+    }
+  } else {
+    if (hostScores && Object.keys(hostScores).length > 1) {
+      const n = Object.keys(hostScores).filter((k) => k !== '_meta').length
+      el.textContent = `✓ 影子测试数据已就绪（${n} 个 host 评分）`
+      el.style.color = '#34c759'
+    } else {
+      el.textContent = '⚠ 尚未运行影子测试，请先运行'
+      el.style.color = '#ff9500'
+    }
+  }
+}
+
+document.querySelectorAll('input[name="backendMode"]').forEach((el) => {
+  el.addEventListener('change', updateBackendModeStatus)
+})
+
 /* ═════════ 风险提示 ═════════ */
 function renderRiskBadge(info) {
   const risk = info && info.risk
@@ -599,9 +859,18 @@ function updateMergeButtonState() {
   $('btnGenerateMerge').disabled = !analyzedFiles || !anyChecked
 }
 
-/* ═════════ 生成合并音源 ═════════ */
+/* ═════════ 生成合并音源（⭐ v2.0：按策略收集参数） ═════════ */
 $('btnGenerateMerge').addEventListener('click', async () => {
   if (!analyzedFiles) return alert('请先完成测试')
+
+  const mode = getBackendMode()
+
+  // 评分模式：必须已有影子数据
+  if (mode === 'score') {
+    if (!hostScores || Object.keys(hostScores).filter(k => k !== '_meta').length === 0) {
+      return alert('评分模式需要先运行「影子测试」并获取到至少一个 host 的评分数据')
+    }
+  }
 
   const checkboxes = document.querySelectorAll('.api-card:not(.filtered-out) .merge-checkbox')
   const fileIndexMap = new Map()
@@ -617,7 +886,6 @@ $('btnGenerateMerge').addEventListener('click', async () => {
     const idx = fileIndexMap.get(file)
     if (idx === undefined) continue
 
-    // ⭐ v1.7：跳过 hasInitRequests=true 的子源
     const analyzed = analyzedFiles[idx]
     if (analyzed && analyzed.hasInitRequests) {
       if (!skippedInitReq.includes(file)) skippedInitReq.push(file)
@@ -641,14 +909,25 @@ $('btnGenerateMerge').addEventListener('click', async () => {
     return alert('没有可参与合并的子源（可能全部被初始化请求排除）')
   }
 
-  const blockedHosts = collectBlockedHosts()
-  if (blockedHosts.length > 0) {
-    const ok = confirm(`检测到 ${blockedHosts.length} 个后端将被屏蔽：\n${blockedHosts.slice(0, 10).join('\n')}${blockedHosts.length > 10 ? '\n...' : ''}\n\n继续生成？`)
-    if (!ok) return
+  // 根据模式收集参数
+  let blockedHosts = []
+  if (mode === 'blacklist') {
+    blockedHosts = collectBlockedHosts()
+    if (blockedHosts.length > 0) {
+      const ok = confirm(
+        `检测到 ${blockedHosts.length} 个后端将被屏蔽：\n` +
+        blockedHosts.slice(0, 10).join('\n') +
+        (blockedHosts.length > 10 ? '\n...' : '') +
+        `\n\n继续生成？`
+      )
+      if (!ok) return
+    }
   }
 
   $('btnGenerateMerge').disabled = true
-  $('mergeStatus').textContent = '正在生成（裁剪 + 排序 + 合并 + 后端屏蔽）...'
+  $('mergeStatus').textContent = mode === 'score'
+    ? '正在生成（裁剪 + 排序 + 合并 + 评分注入）...'
+    : '正在生成（裁剪 + 排序 + 合并 + 黑名单）...'
   $('mergeStatus').style.color = '#007aff'
 
   try {
@@ -656,7 +935,9 @@ $('btnGenerateMerge').addEventListener('click', async () => {
       files: analyzedFiles,
       selection,
       report: lastReport,
+      backendMode: mode,
       blockedHosts,
+      hostScores,
     })
     if (r && r.ok) {
       $('mergeStatus').textContent = '已生成: ' + r.path
@@ -890,3 +1171,6 @@ function escapeHtml(s) {
     t.addEventListener('click', () => activate(t.dataset.tab))
   })
 })()
+
+/* ═════════ 初始化：更新策略状态提示 ═════════ */
+updateBackendModeStatus()
