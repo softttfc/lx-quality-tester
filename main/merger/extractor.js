@@ -12,10 +12,6 @@ const { analyzeRisks } = require('../apiLoader')
 // Layer 1：模式识别，删除装饰性的初始化请求
 // ═══════════════════════════════════════════════════════
 
-/**
- * 需要识别的装饰性初始化函数名
- * 这些函数的返回值在表达式语句中被丢弃，删除后不影响 inited 流程
- */
 const DECORATIVE_FN_NAMES = [
   /^checkUpdate$/i,
   /^checkLatestVersion$/i,
@@ -28,12 +24,6 @@ function isDecorativeFnName(name) {
   return DECORATIVE_FN_NAMES.some((re) => re.test(name))
 }
 
-/**
- * 找到调用链的根标识符
- * 例如：checkUpdate().then(...) 的根是 Identifier "checkUpdate"
- *       checkUpdate().catch(...) 的根是 Identifier "checkUpdate"
- *       await checkUpdate() 的根是 Identifier "checkUpdate"
- */
 function getCallChainRoot(node) {
   let cur = node
   let guard = 0
@@ -55,19 +45,6 @@ function getCallChainRoot(node) {
   return cur
 }
 
-/**
- * Layer 1：删除装饰性初始化调用
- *
- * ⭐ v1.8：不再限制必须在 Program 顶层。
- *   Free listen.js / 小熊猫音源.js 的 checkLatestVersion().then(...)
- *   位于 IIFE 内部，旧逻辑永远匹配不到。
- *   这里改为匹配任意层级的独立表达式语句。
- *   由于装饰性调用几乎都写作"独立表达式语句"（返回值被丢弃），
- *   不会误伤到变量赋值 / return 等场景。
- *
- * @param {string} script
- * @returns {{ code: string, report: { changed: boolean, removed: number, removedItems: string[], error: string|null } }}
- */
 function stripDecorativeInitRequests(script) {
   const report = { changed: false, removed: 0, removedItems: [], error: null }
   if (typeof script !== 'string' || !script.trim()) {
@@ -90,12 +67,10 @@ function stripDecorativeInitRequests(script) {
     return { code: script, report }
   }
 
-  // 收集任意层级的 ExpressionStatement 中匹配装饰性函数名的调用
   const toRemove = []
 
   traverse(ast, {
     ExpressionStatement(path) {
-      // ⭐ v1.8：不再限制 path.parent.type === 'Program'
       const expr = path.node.expression
       const root = getCallChainRoot(expr)
       if (!root || !t.isIdentifier(root)) return
@@ -147,11 +122,19 @@ function stripDecorativeInitRequests(script) {
 // 沙箱执行
 // ═══════════════════════════════════════════════════════
 
-function buildSandbox(lx) {
+/**
+ * ⭐ buildSandbox 现在接收受控定时器
+ */
+function buildSandbox(lx, timers) {
+  const t = timers || {}
   const sandbox = {
     lx,
     console: { log: () => {}, error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
-    setTimeout, clearTimeout, setInterval, clearInterval, setImmediate,
+    setTimeout: t.setTimeout || setTimeout,
+    clearTimeout: t.clearTimeout || clearTimeout,
+    setInterval: t.setInterval || setInterval,
+    clearInterval: t.clearInterval || clearInterval,
+    setImmediate: t.setImmediate || setImmediate,
     Buffer, Promise, JSON, Date, Math, Object, Array, String, Number, Boolean,
     RegExp, Error, TypeError, RangeError, Symbol, Map, Set, WeakMap, WeakSet,
     encodeURIComponent, decodeURIComponent, encodeURI, decodeURI,
@@ -161,6 +144,7 @@ function buildSandbox(lx) {
     Int32Array, Uint32Array, Float32Array, Float64Array,
     ArrayBuffer, DataView,
   }
+  if (t.clearImmediate) sandbox.clearImmediate = t.clearImmediate
   sandbox.globalThis = sandbox
   sandbox.global = sandbox
   return sandbox
@@ -168,52 +152,39 @@ function buildSandbox(lx) {
 
 /**
  * 在沙箱中执行代码并等待 inited
- * @returns {{ handlers, getInitRequestLog, error: string|null }}
+ * ⭐ 返回 cleanup 供调用方释放定时器
  */
 async function runInSandbox(script, scriptPath) {
-  const { lx, handlers, getInitRequestLog } = createLxSandbox(
+  const { lx, handlers, getInitRequestLog, timers, cleanup } = createLxSandbox(
     { rawScript: script },
     { logRequests: true }
   )
 
-  const sandbox = buildSandbox(lx)
+  const sandbox = buildSandbox(lx, timers)
 
   try {
     vm.createContext(sandbox)
     vm.runInContext(script, sandbox, { timeout: 30000, filename: scriptPath })
   } catch (err) {
-    return { handlers, getInitRequestLog, error: `执行失败: ${err.message}` }
+    return { handlers, getInitRequestLog, cleanup, error: `执行失败: ${err.message}` }
   }
 
-  // 等待 inited 事件（异步音源需要）
   const startTime = Date.now()
   while (!handlers.inited && Date.now() - startTime < 15000) {
     await new Promise((r) => setTimeout(r, 100))
   }
 
   if (!handlers.inited) {
-    return { handlers, getInitRequestLog, error: '未触发 inited 事件' }
+    return { handlers, getInitRequestLog, cleanup, error: '未触发 inited 事件' }
   }
 
-  return { handlers, getInitRequestLog, error: null }
+  return { handlers, getInitRequestLog, cleanup, error: null }
 }
 
 // ═══════════════════════════════════════════════════════
 // 主入口
 // ═══════════════════════════════════════════════════════
 
-/**
- * 预跑一个音源，提取它的 sources 声明
- *
- * 返回：
- *   {
- *     sources, risk, error,
- *     cleanedCode,       // Layer 1 清理后的代码（失败时回退到原始）
- *     hasInitRequests,   // 清理后仍存在初始化窗口内发出的请求
- *     initRequests,      // 具体请求列表 [{ url, host, beforeInited, inInitWindow }]
- *     cleanReport,       // Layer 1 的清理报告
- *   }
- */
 async function extractSources(scriptPath) {
   const emptyRisk = { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} }
 
@@ -232,7 +203,6 @@ async function extractSources(scriptPath) {
     }
   }
 
-  // 风险分析（静态扫描，与沙箱无关）
   const risk = analyzeRisks(script)
 
   // Layer 1：删除装饰性初始化调用
@@ -258,13 +228,16 @@ async function extractSources(scriptPath) {
   // 在清理后的代码上跑沙箱
   let result = await runInSandbox(cleanedCode, scriptPath)
 
-  // 如果清理后的代码失败，回退到原始代码
+  // ⭐ 如果清理后的代码失败，先释放旧沙箱，再回退到原始代码
   if (result.error && cleanedCode !== script) {
+    if (typeof result.cleanup === 'function') {
+      try { result.cleanup() } catch (_) {}
+    }
     console.warn(
       `[extractor] Layer 1 清理后代码执行失败，回退到原始代码: ${result.error}`
     )
     result = await runInSandbox(script, scriptPath)
-    cleanedCode = script // 回退：不输出清理后的代码
+    cleanedCode = script
     cleanReport = {
       changed: false,
       removed: 0,
@@ -273,45 +246,49 @@ async function extractSources(scriptPath) {
     }
   }
 
-  if (result.error) {
-    return {
-      sources: {},
-      risk,
-      error: result.error,
-      cleanedCode,
-      hasInitRequests: false,
-      initRequests: [],
-      cleanReport,
+  // ⭐ 所有 return 都走 finally，确保沙箱被释放
+  try {
+    if (result.error) {
+      return {
+        sources: {},
+        risk,
+        error: result.error,
+        cleanedCode,
+        hasInitRequests: false,
+        initRequests: [],
+        cleanReport,
+      }
     }
-  }
 
-  // 收集初始化窗口内发出的请求
-  // ⭐ v1.8：getInitRequestLog 已改为按 inInitWindow 过滤
-  //   这能覆盖 inited 之后立即发起的装饰性请求（Free listen / 小熊猫）
-  const initRequests = result.getInitRequestLog ? result.getInitRequestLog() : []
-  const hasInitRequests = initRequests.length > 0
+    const initRequests = result.getInitRequestLog ? result.getInitRequestLog() : []
+    const hasInitRequests = initRequests.length > 0
 
-  const initData = result.handlers.inited
-  if (!initData || !initData.sources || typeof initData.sources !== 'object') {
+    const initData = result.handlers.inited
+    if (!initData || !initData.sources || typeof initData.sources !== 'object') {
+      return {
+        sources: {},
+        risk,
+        error: 'inited 未声明 sources',
+        cleanedCode,
+        hasInitRequests,
+        initRequests,
+        cleanReport,
+      }
+    }
+
     return {
-      sources: {},
+      sources: initData.sources,
       risk,
-      error: 'inited 未声明 sources',
+      error: null,
       cleanedCode,
       hasInitRequests,
       initRequests,
       cleanReport,
     }
-  }
-
-  return {
-    sources: initData.sources,
-    risk,
-    error: null,
-    cleanedCode,
-    hasInitRequests,
-    initRequests,
-    cleanReport,
+  } finally {
+    if (typeof result.cleanup === 'function') {
+      try { result.cleanup() } catch (_) {}
+    }
   }
 }
 
