@@ -14,6 +14,9 @@ let hostScores = null
 let shadowUnsubscribe = null
 let heavyTestLock = null   // 'backend' | 'shadow' | null —— 两个测试互斥
 
+// ⭐ v1.3.0：共享后端提示防抖
+let sharedHintTimer = null
+
 /* ═════════ 目录选择 ═════════ */
 $('btnSelectDir').addEventListener('click', async () => {
   const dir = await window.api.selectSourcesDir()
@@ -170,9 +173,71 @@ async function prepareMergeData() {
 
     refreshInitRequestFlags()
     updateMergeButtonState()
+    // ⭐ v1.3.0：刷新共享后端提示
+    refreshSharedHostsHint()
   } catch (err) {
     $('mergeStatus').textContent = '分析失败: ' + (err.message || err)
     $('mergeStatus').style.color = '#ff3b30'
+  }
+}
+
+/* ═════════ v1.3.0：共享后端检测提示 ═════════ */
+function scheduleSharedHint() {
+  if (sharedHintTimer) clearTimeout(sharedHintTimer)
+  sharedHintTimer = setTimeout(() => {
+    sharedHintTimer = null
+    refreshSharedHostsHint()
+  }, 300)
+}
+
+async function refreshSharedHostsHint() {
+  const el = $('sharedHostsHint')
+  if (!el) return
+  if (!analyzedFiles || !analyzedFiles.length) {
+    el.textContent = '勾选平台后自动检测共享后端'
+    el.style.color = '#999'
+    return
+  }
+
+  // 从当前 UI 收集 selection
+  const fileIndexMap = new Map()
+  analyzedFiles.forEach((f, idx) => fileIndexMap.set(f.name, idx))
+  const selection = {}
+  document.querySelectorAll('.api-card:not(.filtered-out) .merge-checkbox').forEach((cb) => {
+    if (!cb.checked) return
+    const file = cb.dataset.file
+    const source = cb.dataset.source
+    const idx = fileIndexMap.get(file)
+    if (idx === undefined) return
+    if (!selection[idx]) selection[idx] = []
+    if (!selection[idx].includes(source)) selection[idx].push(source)
+  })
+
+  if (Object.keys(selection).length === 0) {
+    el.textContent = '勾选平台后自动检测共享后端'
+    el.style.color = '#999'
+    return
+  }
+
+  el.textContent = '检测中...'
+  el.style.color = '#007aff'
+
+  try {
+    const r = await window.api.detectSharedHosts({
+      files: analyzedFiles,
+      selection,
+    })
+    if (r && r.hosts && r.hosts.length > 0) {
+      el.innerHTML = `检测到 ${r.hosts.length} 个共享后端，生成时会启用串行保护：<br>` +
+        r.hosts.map((h) => `<code>${escapeHtml(h)}</code>`).join(' ')
+      el.style.color = '#007aff'
+    } else {
+      el.textContent = '未检测到共享后端（无并发打爆风险）'
+      el.style.color = '#34c759'
+    }
+  } catch (e) {
+    el.textContent = '检测失败：' + (e.message || e)
+    el.style.color = '#ff3b30'
   }
 }
 
@@ -551,7 +616,6 @@ function parseShadowSongs(text) {
   for (const line of lines) {
     let name = ''
     let singer = ''
-    // 支持 "歌名 - 歌手" / "歌名|歌手" / "歌名—歌手" / "歌名 – 歌手"
     const m = line.match(/^(.+?)\s*[-|—–]\s*(.+)$/)
     if (m) {
       name = m[1].trim()
@@ -592,7 +656,6 @@ $('btnRunShadowTest').addEventListener('click', async () => {
   })
 
   try {
-    // 1. 对每首歌搜索各平台 ID
     const songs = []
     for (let i = 0; i < songLines.length; i++) {
       const { name, singer } = songLines[i]
@@ -633,7 +696,6 @@ $('btnRunShadowTest').addEventListener('click', async () => {
       return
     }
 
-    // 2. 运行影子测试
     $('shadowStatus').textContent = `开始影子测试，共 ${songs.length} 首歌曲 × ${availableFiles.length} 个音源`
     $('shadowStatus').style.color = '#007aff'
 
@@ -682,7 +744,6 @@ function renderShadowScorePanel(hostScores) {
     return
   }
 
-  // 按综合评分降序
   entries.sort((a, b) => computeScore(b[1]) - computeScore(a[1]))
 
   const shown = entries.slice(0, 50)
@@ -852,6 +913,8 @@ function applyAllFilters() {
   })
 
   updateMergeButtonState()
+  // ⭐ v1.3.0：刷新共享后端提示
+  scheduleSharedHint()
 }
 
 function updateMergeButtonState() {
@@ -865,7 +928,6 @@ $('btnGenerateMerge').addEventListener('click', async () => {
 
   const mode = getBackendMode()
 
-  // 评分模式：必须已有影子数据
   if (mode === 'score') {
     if (!hostScores || Object.keys(hostScores).filter(k => k !== '_meta').length === 0) {
       return alert('评分模式需要先运行「影子测试」并获取到至少一个 host 的评分数据')
@@ -909,7 +971,6 @@ $('btnGenerateMerge').addEventListener('click', async () => {
     return alert('没有可参与合并的子源（可能全部被初始化请求排除）')
   }
 
-  // 根据模式收集参数
   let blockedHosts = []
   if (mode === 'blacklist') {
     blockedHosts = collectBlockedHosts()
@@ -926,8 +987,8 @@ $('btnGenerateMerge').addEventListener('click', async () => {
 
   $('btnGenerateMerge').disabled = true
   $('mergeStatus').textContent = mode === 'score'
-    ? '正在生成（裁剪 + 排序 + 合并 + 评分注入）...'
-    : '正在生成（裁剪 + 排序 + 合并 + 黑名单）...'
+    ? '正在生成（裁剪 + 排序 + 合并 + 评分注入 + 共享后端检测）...'
+    : '正在生成（裁剪 + 排序 + 合并 + 黑名单 + 共享后端检测）...'
   $('mergeStatus').style.color = '#007aff'
 
   try {
@@ -1001,7 +1062,10 @@ function renderResult(report) {
   })
 
   document.querySelectorAll('.merge-checkbox').forEach((cb) => {
-    cb.addEventListener('change', updateMergeButtonState)
+    cb.addEventListener('change', () => {
+      updateMergeButtonState()
+      scheduleSharedHint()
+    })
   })
 
   updateRiskSummary()
