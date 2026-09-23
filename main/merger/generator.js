@@ -1,6 +1,6 @@
 /**
  * 生成合并后的音源文件
- * @version 1.2.0
+ * @version 1.3.0
  */
 
 const { applyBackendBlacklist } = require('./backendBlocker')
@@ -56,6 +56,107 @@ function extractHeader(content) {
   return m ? m[0] : ''
 }
 
+// ═══════════════════════════════════════════════════════
+// ⭐ v1.3.0 新增：从脚本源码中抽取 host（用于共享后端检测）
+// ═══════════════════════════════════════════════════════
+function extractHosts(script) {
+  const hosts = new Set()
+  if (typeof script !== 'string' || !script) return hosts
+
+  // 匹配显式 URL：https?://hostname
+  const re1 = /https?:\/\/([a-zA-Z0-9.\-]+)/g
+  let m
+  while ((m = re1.exec(script)) !== null) {
+    const h = m[1].toLowerCase()
+    if (h && h.includes('.')) hosts.add(h)
+  }
+
+  // 匹配字符串字面量中的裸域名：'api.foo.com'
+  const re2 = /['"]((?:[a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}(?::\d+)?)['"]/g
+  while ((m = re2.exec(script)) !== null) {
+    const h = m[1].toLowerCase().replace(/:\d+$/, '')
+    // 排除明显的静态资源文件名
+    if (/\.(js|json|css|png|jpg|jpeg|gif|svg|woff|woff2|ttf|ico|mp3|flac|m4a|mp4|webp)$/i.test(h)) continue
+    // 排除过于简短的（如 a.b）
+    if (h.length < 6) continue
+    hosts.add(h)
+  }
+
+  return hosts
+}
+
+// ═══════════════════════════════════════════════════════
+// ⭐ v1.3.0 新增：找出被 ≥2 个子源共用的 host
+// ═══════════════════════════════════════════════════════
+function findSharedHosts(files, selection) {
+  const hostToFileIdxs = new Map()
+  for (const [idxStr, platforms] of Object.entries(selection || {})) {
+    if (!Array.isArray(platforms) || platforms.length === 0) continue
+    const idx = Number(idxStr)
+    const file = files[idx]
+    if (!file || !file.content) continue
+    const hosts = extractHosts(file.content)
+    for (const h of hosts) {
+      if (!hostToFileIdxs.has(h)) hostToFileIdxs.set(h, new Set())
+      hostToFileIdxs.get(h).add(idx)
+    }
+  }
+  const shared = []
+  for (const [host, idxs] of hostToFileIdxs) {
+    if (idxs.size >= 2) shared.push(host)
+  }
+  return shared.sort()
+}
+
+// ═══════════════════════════════════════════════════════
+// ⭐ v1.3.0 新增：参数规范度评分（供排序 tiebreaker 用）
+// ═══════════════════════════════════════════════════════
+function computeParamScore(script) {
+  if (typeof script !== 'string' || !script) return 0
+  const KEYWORDS = [
+    { field: 'singer',       weight: 10 },
+    { field: 'songname',     weight: 8 },
+    { field: 'songName',     weight: 8 },
+    { field: 'albumName',    weight: 8 },
+    { field: 'hash',         weight: 8 },
+    { field: 'songmid',      weight: 8 },
+    { field: 'albumId',      weight: 5 },
+    { field: 'rid',          weight: 5 },
+    { field: 'copyrightId',  weight: 5 },
+    { field: 'strMediaMid',  weight: 3 },
+    { field: 'mediaMid',     weight: 3 },
+    { field: 'duration',     weight: 3 },
+    { field: 'albumAudioId', weight: 3 },
+  ]
+  let score = 0
+  for (const { field, weight } of KEYWORDS) {
+    const patterns = [
+      new RegExp(`\\bmusicInfo\\.${field}\\b`),
+      new RegExp(`\\binfo\\.${field}\\b`),
+      new RegExp(`\\{[^{}]*\\b${field}\\b[^{}]*\\}`),
+    ]
+    if (patterns.some((re) => re.test(script))) score += weight
+  }
+  return score
+}
+
+// ═══════════════════════════════════════════════════════
+// ⭐ v1.3.0 新增：统计子源内部后端数量（供排序 tiebreaker 用）
+// ═══════════════════════════════════════════════════════
+function countBackends(script) {
+  if (typeof script !== 'string' || !script) return 0
+  const m = script.match(/BACKENDS?\s*=\s*\[([\s\S]*?)\]/i)
+  if (!m) return 0
+  return (m[1].match(/\{\s*name\s*:/g) || []).length
+}
+
+// ═══════════════════════════════════════════════════════
+// ⭐ v1.3.0 新增：对外暴露的共享后端检测接口（供 UI 调用）
+// ═══════════════════════════════════════════════════════
+function detectSharedHosts(files, selection) {
+  return findSharedHosts(files, selection)
+}
+
 function computeScores(report) {
   const scores = {}
   if (!report || !Array.isArray(report.results)) return scores
@@ -87,7 +188,6 @@ function sanitizeHostScores(hostScores) {
   for (const [host, v] of Object.entries(hostScores)) {
     if (host === '_meta') continue
     if (!v || typeof v !== 'object') continue
-    // 只保留数字字段，避免把大对象嵌进生成文件
     const cleaned = {}
     const NUMERIC_FIELDS = ['calls', 'ok', 'fail', 'blocked', 'httpError',
                             'contributions', 'rate', 'avgMs', 'avgOrder', 'contributionRate']
@@ -129,6 +229,9 @@ function generateMergedCode(files, selection, report, options = {}) {
 
   const scores = computeScores(report)
 
+  // ⭐ v1.3.0：自动检测共享后端
+  const sharedHosts = findSharedHosts(files, selection)
+
   const priorityMap = {}
   for (const [fileIdxStr, platforms] of Object.entries(selection)) {
     const fileIdx = Number(fileIdxStr)
@@ -140,14 +243,26 @@ function generateMergedCode(files, selection, report, options = {}) {
     }
   }
 
+  // ⭐ v1.3.0：排序规则增加 tiebreaker（参数规范度、后端数量）
   for (const p of Object.keys(priorityMap)) {
     priorityMap[p].sort((a, b) => {
       const nameA = files[a]?.name || ''
       const nameB = files[b]?.name || ''
       const sa = (scores[nameA] && scores[nameA][p]) || { bestIdx: 99, passCount: 0 }
       const sb = (scores[nameB] && scores[nameB][p]) || { bestIdx: 99, passCount: 0 }
+      // 1. 音质最高优先
       if (sa.bestIdx !== sb.bestIdx) return sa.bestIdx - sb.bestIdx
+      // 2. 通过数多优先
       if (sa.passCount !== sb.passCount) return sb.passCount - sa.passCount
+      // 3. 参数规范度高优先
+      const pa = computeParamScore(files[a]?.content || '')
+      const pb = computeParamScore(files[b]?.content || '')
+      if (pa !== pb) return pb - pa
+      // 4. 内部后端数量少优先
+      const ba = countBackends(files[a]?.content || '')
+      const bb = countBackends(files[b]?.content || '')
+      if (ba !== bb) return ba - bb
+      // 5. 保持原顺序
       return a - b
     })
   }
@@ -181,9 +296,13 @@ function generateMergedCode(files, selection, report, options = {}) {
     ? '后端优化：影子评分'
     : (blockedHosts.length > 0 ? '后端优化：黑名单' : '后端优化：无')
 
+  const sharedInfo = sharedHosts.length > 0
+    ? `\n * 检测到共享后端（已启用串行保护）：\n${sharedHosts.map((h) => ' *   - ' + h).join('\n')}`
+    : ''
+
   let code = `/*!
  * @name 合并音源
- * @description 由以下音源合并生成（平台优先级已按上次测试结果排序；${modeLabel}）：
+ * @description 由以下音源合并生成（平台优先级已按上次测试结果排序；${modeLabel}）：${sharedInfo}
 ${files.map((f, i) => {
   const platforms = selection[i] || []
   const pStr = platforms.length ? ` [${platforms.join(', ')}]` : ' (未使用)'
@@ -199,7 +318,7 @@ ${files.map((f, i) => {
     : ''
   return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}`
 }).join('\n')}
- * @version 1.2.0
+ * @version 1.3.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -235,40 +354,58 @@ ${files.map((f, i) => {
 `
 
   // ═══════════════════════════════════════════════════════
-  // 【模式 1】黑名单：注入 __BLOCKED_HOSTS__ + __makeRequestWrapper__
+  // 【模式注入】根据模式决定是否需要注入 wrapper
   // ═══════════════════════════════════════════════════════
-  if (backendMode === 'blacklist' && blockedHosts.length > 0) {
+  const needWrapper =
+    (backendMode === 'blacklist' && blockedHosts.length > 0) ||
+    (backendMode === 'score' && Object.keys(sanitizedScores).length > 0) ||
+    sharedHosts.length > 0
+
+  if (needWrapper) {
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【后端黑名单】运行时包装 request
+  // 【共享后端串行队列】被多个子源共用的后端串行调用，避免并发打爆
   // ═══════════════════════════════════════════════════════
-  var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
-  function __makeRequestWrapper__(origRequest, lxRef) {
-    return function (url, options, cb) {
-      var cb2 = (typeof options === 'function') ? options : cb
-      try {
-        var hostMatch = String(url).match(/^https?:\\/\\/([^/?#]+)/i)
-        var host = hostMatch ? hostMatch[1].toLowerCase().replace(/:\\d+$/, '') : null
-        if (host && __BLOCKED_HOSTS__.has(host)) {
-          var err = new Error('getaddrinfo ENOTFOUND ' + host)
-          err.code = 'ENOTFOUND'
-          err.errno = -3008
-          err.syscall = 'getaddrinfo'
-          err.hostname = host
-          err.blockedByMerger = true
-          if (typeof cb2 === 'function') setImmediate(function () { cb2(err, null, null) })
-          return function () {}
-        }
-      } catch (e) {}
-      return origRequest.apply(lxRef || this || __origin_lx, arguments)
-    }
+  var __SHARED_HOSTS__ = new Set(${JSON.stringify(sharedHosts)})
+  var __HOST_QUEUES__ = Object.create(null)
+
+  function __enqueueByHost__(host, run) {
+    if (!host || !__SHARED_HOSTS__.has(host)) return run()
+    var prev = __HOST_QUEUES__[host] || Promise.resolve()
+    var next = prev.then(
+      function () { return run() },
+      function () { return run() }
+    )
+    __HOST_QUEUES__[host] = next.catch(function () {})
+    return next
   }
 `
   }
 
+  // ⭐ 黑名单模式
+  if (backendMode === 'blacklist' && blockedHosts.length > 0) {
+    code += `
   // ═══════════════════════════════════════════════════════
-  // 【模式 2】影子评分：注入 __HOST_SCORES__ + __scoreHost__ + __makeRequestWrapper__
+  // 【后端黑名单】拦截器
   // ═══════════════════════════════════════════════════════
+  var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
+
+  function __interceptRequest__(host) {
+    if (host && __BLOCKED_HOSTS__.has(host)) {
+      var err = new Error('getaddrinfo ENOTFOUND ' + host)
+      err.code = 'ENOTFOUND'
+      err.errno = -3008
+      err.syscall = 'getaddrinfo'
+      err.hostname = host
+      err.blockedByMerger = true
+      return err
+    }
+    return null
+  }
+`
+  }
+
+  // ⭐ 评分模式
   if (backendMode === 'score' && Object.keys(sanitizedScores).length > 0) {
     code += `
   // ═══════════════════════════════════════════════════════
@@ -279,6 +416,7 @@ ${files.map((f, i) => {
   // ═══════════════════════════════════════════════════════
   var __HOST_SCORES__ = ${JSON.stringify(sanitizedScores)}
   var __scoreCache__ = {}
+
   function __scoreHost__(host) {
     if (__scoreCache__[host] !== undefined) return __scoreCache__[host]
     var s = __HOST_SCORES__[host]
@@ -286,37 +424,92 @@ ${files.map((f, i) => {
     var rateScore = (typeof s.rate === 'number') ? s.rate : 1.0
     var speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
     var orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
-    var result = rateScore * 0.6 + speedScore * 0.3 + orderScore * 0.1
-    return __scoreCache__[host] = result
+    return __scoreCache__[host] = rateScore * 0.6 + speedScore * 0.3 + orderScore * 0.1
   }
 
+  function __interceptRequest__(host) {
+    if (!host) return null
+    var s = __HOST_SCORES__[host]
+    if (!s) return null
+    var score = __scoreHost__(host)
+    var calls = s.calls || 0
+    var rate = (typeof s.rate === 'number') ? s.rate : 1.0
+    if (score < 0.15 && rate < 0.1 && calls >= 3) {
+      var err = new Error('getaddrinfo ENOTFOUND ' + host)
+      err.code = 'ENOTFOUND'
+      err.errno = -3008
+      err.syscall = 'getaddrinfo'
+      err.hostname = host
+      err.blockedByScorer = true
+      return err
+    }
+    return null
+  }
+`
+  }
+
+  // ⭐ 统一 wrapper（拦截 + 串行队列）
+  if (needWrapper) {
+    code += `
+  // ═══════════════════════════════════════════════════════
+  // 【统一 request wrapper】先拦截，再走串行队列
+  // ═══════════════════════════════════════════════════════
   function __makeRequestWrapper__(origRequest, lxRef) {
-    return function (url, options, cb) {
+    if (origRequest.__hywWrapped__) return origRequest
+
+    var wrapped = function (url, options, cb) {
       var cb2 = (typeof options === 'function') ? options : cb
+      var host = null
       try {
-        var hostMatch = String(url).match(/^https?:\\/\\/([^/?#]+)/i)
-        var host = hostMatch ? hostMatch[1].toLowerCase().replace(/:\\d+$/, '') : null
-        if (host) {
-          var s = __HOST_SCORES__[host]
-          if (s) {
-            var score = __scoreHost__(host)
-            var calls = s.calls || 0
-            var rate = (typeof s.rate === 'number') ? s.rate : 1.0
-            if (score < 0.15 && rate < 0.1 && calls >= 3) {
-              var err = new Error('getaddrinfo ENOTFOUND ' + host)
-              err.code = 'ENOTFOUND'
-              err.errno = -3008
-              err.syscall = 'getaddrinfo'
-              err.hostname = host
-              err.blockedByScorer = true
-              if (typeof cb2 === 'function') setImmediate(function () { cb2(err, null, null) })
-              return function () {}
+        var m = String(url).match(/^https?:\\/\\/([^/?#]+)/i)
+        host = m ? m[1].toLowerCase().replace(/:\\d+$/, '') : null
+      } catch (e) {}
+
+      // 1. 拦截检查（黑名单 / 评分）
+      if (typeof __interceptRequest__ === 'function') {
+        var intErr = null
+        try { intErr = __interceptRequest__(host) } catch (e) {}
+        if (intErr) {
+          if (typeof cb2 === 'function') setImmediate(function () { cb2(intErr, null, null) })
+          return function () {}
+        }
+      }
+
+      // 2. 串行队列（仅共享后端）
+      return __enqueueByHost__(host, function () {
+        return new Promise(function (resolve) {
+          var done = false
+          var release = function () {
+            if (done) return
+            done = true
+            resolve()
+          }
+          var guard = setTimeout(function () {
+            console.log('[串行队列] host=' + host + ' 30s 超时释放')
+            release()
+          }, 30000)
+          try {
+            origRequest.call(lxRef || __origin_lx, url, options, function (err, resp, body) {
+              clearTimeout(guard)
+              try {
+                if (typeof cb2 === 'function') cb2(err, resp, body)
+              } finally {
+                release()
+              }
+            })
+          } catch (e) {
+            clearTimeout(guard)
+            try {
+              if (typeof cb2 === 'function') cb2(e, null, null)
+            } finally {
+              release()
             }
           }
-        }
-      } catch (e) {}
-      return origRequest.apply(lxRef || this || __origin_lx, arguments)
+        })
+      })
     }
+    wrapped.__hywWrapped__ = true
+    return wrapped
   }
 `
   }
@@ -498,7 +691,10 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
       try {
         __origin_lx.request(url, {
           method: 'GET',
-          headers: { 'Range': 'bytes=0-1023' },
+          headers: {
+            'Range': 'bytes=0-1023',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36'
+          },
           timeout: 8000,
         }, function (err, resp) {
           clearTimeout(timer)
@@ -558,18 +754,18 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
         if (!result) continue
 
         const actual = await __probeUrl__(result)
+        console.log('[分发] 源' + (fileIdx + 1) + ' 探测结果:', actual, '| URL前80:', String(result).slice(0, 80))
 
-        if (actual === null) {
-          errors.push('[源' + (fileIdx + 1) + '] 探测失败')
-          continue
-        }
-        if (actual === '__UNKNOWN_OK__') {
+        // ⭐ v1.3.0：探测失败/未知 → 直接放行（探测只是优化，不是判据）
+        if (actual === null || actual === '__UNKNOWN_OK__') {
+          console.log('[分发] 源' + (fileIdx + 1) + ' 探测失败/未知，放行')
           return result
         }
-        if (__qualityIndex__(actual) <= reqIdx) {
-          return result
+        // ⭐ v1.3.0：音质降级也放行（用户听了不满意再换源）
+        if (__qualityIndex__(actual) > reqIdx) {
+          console.log('[分发] 源' + (fileIdx + 1) + ' 降级 ' + requested + '→' + actual + '，放行')
         }
-        errors.push('[源' + (fileIdx + 1) + '] 降级 ' + requested + '→' + actual)
+        return result
       } catch (e) {
         errors.push('[源' + (fileIdx + 1) + '] ' + (e && e.message ? e.message : String(e)))
       }
@@ -607,4 +803,4 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
   return code
 }
 
-module.exports = { generateMergedCode }
+module.exports = { generateMergedCode, detectSharedHosts }
