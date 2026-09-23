@@ -198,6 +198,16 @@ ipcMain.handle('merge-sources', async (event, {
   }
 })
 
+// ⭐ v1.3.0：共享后端检测（供 UI 提前提示）
+ipcMain.handle('detect-shared-hosts', async (event, { files, selection }) => {
+  try {
+    const { detectSharedHosts } = require('./merger/generator')
+    return { hosts: detectSharedHosts(files || [], selection || {}) }
+  } catch (err) {
+    return { hosts: [], error: err.message || String(err) }
+  }
+})
+
 // ═══════════════════════════════════════════════════════
 // 音源检索 IPC
 // ═══════════════════════════════════════════════════════
