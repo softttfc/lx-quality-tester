@@ -840,3 +840,26 @@ textarea#shadowSongs:focus {
   margin-bottom: 2px;
   line-height: 1.3;
 }
+/* ═══════════════════════════════════════════════════════
+   ⭐ v1.3.0：共享后端提示
+   ═══════════════════════════════════════════════════════ */
+.shared-hosts-hint {
+  font-size: 11px;
+  color: #999;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #f9f9f9;
+  border-radius: 4px;
+  line-height: 1.6;
+  word-break: break-all;
+  min-height: 20px;
+}
+.shared-hosts-hint code {
+  background: #e6f2ff;
+  color: #007aff;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  margin: 0 2px;
+}
