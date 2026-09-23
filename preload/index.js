@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('shadow-progress', listener)
   },
 
+  // ⭐ v1.3.0：共享后端检测
+  detectSharedHosts: (params) => ipcRenderer.invoke('detect-shared-hosts', params),
+
   // ═══════════════ 音源检索 ═══════════════
   discoverLoadRepos: () => ipcRenderer.invoke('discover-load-repos'),
   discoverSaveRepos: (config) => ipcRenderer.invoke('discover-save-repos', config),
