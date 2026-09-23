@@ -1,6 +1,13 @@
 /**
  * 生成合并后的音源文件
- * @version 1.3.0
+ * @version 1.4.0
+ * @changelog
+ *   v1.4.0:
+ *     - [1] 共享后端从"完全串行"改为"有界并发"（__MAX_CONCURRENT__=3）
+ *     - [2] guard 超时 30s → 15s
+ *     - [3] dispatch 每源软超时 4s + 失败日志
+ *     - [4] countBackends 遍历所有 BACKENDS 数组，统计更准确
+ *     - [5] 文件头每个源后追加 (后端: N)
  */
 
 const { applyBackendBlacklist } = require('./backendBlocker')
@@ -9,6 +16,12 @@ const QUALITY_RANK = [
   'master', 'atmos_plus', 'atmos', 'hires',
   'flac', 'flac24bit', '320k', '192k', '128k',
 ]
+
+// ⭐ v1.4.0：每源软超时（毫秒）
+const PER_SOURCE_TIMEOUT = 4000
+
+// ⭐ v1.4.0：共享后端每 host 最大并发数
+const MAX_CONCURRENT_PER_HOST = 3
 
 // ═══════════════════════════════════════════════════════
 // 【块 C】受保护域名（防止用户误屏蔽官方 API / 媒体 CDN）
@@ -141,13 +154,36 @@ function computeParamScore(script) {
 }
 
 // ═══════════════════════════════════════════════════════
-// ⭐ v1.3.0 新增：统计子源内部后端数量（供排序 tiebreaker 用）
+// ⭐ v1.4.0 重构：统计子源内部所有 BACKENDS 数组的总后端数
+//   - 旧版用非贪婪正则 /BACKENDS?\s*=\s*\[([\s\S]*?)\]/ 只匹配到第一个 `]` 就停止，
+//     如果数组里嵌套了对象数组（如 urls: []），或脚本有多个 BACKENDS 数组
+//     （如墨澜的 TX/WY/KW/KG/MG 各有独立数组），就只能算到第一个数组的部分元素。
+//   - 新版遍历所有 `BACKENDS?=` 声明，用括号深度匹配找到对应的 `]`，
+//     对每个数组体内的 `{ name: ` 计数并累加。
 // ═══════════════════════════════════════════════════════
 function countBackends(script) {
   if (typeof script !== 'string' || !script) return 0
-  const m = script.match(/BACKENDS?\s*=\s*\[([\s\S]*?)\]/i)
-  if (!m) return 0
-  return (m[1].match(/\{\s*name\s*:/g) || []).length
+  const re = /BACKENDS?\s*=\s*\[/gi
+  let total = 0
+  let m
+  while ((m = re.exec(script)) !== null) {
+    const openIdx = m.index + m[0].length - 1
+    let depth = 0
+    let closeIdx = -1
+    for (let i = openIdx; i < script.length; i++) {
+      const ch = script[i]
+      if (ch === '[') depth++
+      else if (ch === ']') {
+        depth--
+        if (depth === 0) { closeIdx = i; break }
+      }
+    }
+    if (closeIdx === -1) continue
+    const body = script.slice(openIdx + 1, closeIdx)
+    total += (body.match(/\{\s*name\s*:/g) || []).length
+    re.lastIndex = closeIdx + 1
+  }
+  return total
 }
 
 // ═══════════════════════════════════════════════════════
@@ -297,7 +333,7 @@ function generateMergedCode(files, selection, report, options = {}) {
     : (blockedHosts.length > 0 ? '后端优化：黑名单' : '后端优化：无')
 
   const sharedInfo = sharedHosts.length > 0
-    ? `\n * 检测到共享后端（已启用串行保护）：\n${sharedHosts.map((h) => ' *   - ' + h).join('\n')}`
+    ? `\n * 检测到共享后端（已启用有界并发保护，每 host 最多 ${MAX_CONCURRENT_PER_HOST} 个并发）：\n${sharedHosts.map((h) => ' *   - ' + h).join('\n')}`
     : ''
 
   let code = `/*!
@@ -316,9 +352,12 @@ ${files.map((f, i) => {
         return `${p}: ${q}/${s.passCount}`
       }).join(', ') + ' }'
     : ''
-  return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}`
+  // ⭐ v1.4.0：追加后端数量信息
+  const backendCount = countBackends(f.content || '')
+  const backendInfo = backendCount > 0 ? ` (后端: ${backendCount})` : ''
+  return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}${backendInfo}`
 }).join('\n')}
- * @version 1.3.0
+ * @version 1.4.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -361,23 +400,48 @@ ${files.map((f, i) => {
     (backendMode === 'score' && Object.keys(sanitizedScores).length > 0) ||
     sharedHosts.length > 0
 
+  // ⭐ v1.4.0 修改 1：共享后端从"完全串行"改为"有界并发"
   if (needWrapper) {
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【共享后端串行队列】被多个子源共用的后端串行调用，避免并发打爆
+  // 【共享后端有界并发】被多个子源共用的 host 限制最大并发数，
+  // 既避免瞬间打爆后端，也避免"完全串行"造成的队头阻塞。
+  //   - MAX_CONCURRENT = 1 等价于完全串行（旧行为，会队头阻塞）
+  //   - MAX_CONCURRENT = 无限 等价于完全并行（旧旧行为，会打爆后端）
+  //   - MAX_CONCURRENT = ${MAX_CONCURRENT_PER_HOST} 是折中：不打爆，也不被慢请求拖累
   // ═══════════════════════════════════════════════════════
   var __SHARED_HOSTS__ = new Set(${JSON.stringify(sharedHosts)})
-  var __HOST_QUEUES__ = Object.create(null)
+  var __MAX_CONCURRENT__ = ${MAX_CONCURRENT_PER_HOST}
+  var __HOST_INFLIGHT__ = Object.create(null)
+  var __HOST_QUEUE__ = Object.create(null)
 
   function __enqueueByHost__(host, run) {
     if (!host || !__SHARED_HOSTS__.has(host)) return run()
-    var prev = __HOST_QUEUES__[host] || Promise.resolve()
-    var next = prev.then(
-      function () { return run() },
-      function () { return run() }
-    )
-    __HOST_QUEUES__[host] = next.catch(function () {})
-    return next
+
+    return new Promise(function (resolve, reject) {
+      var execute = function () {
+        __HOST_INFLIGHT__[host] = (__HOST_INFLIGHT__[host] || 0) + 1
+        Promise.resolve()
+          .then(run)
+          .then(resolve, reject)
+          .then(function () {
+            __HOST_INFLIGHT__[host] = (__HOST_INFLIGHT__[host] || 1) - 1
+            var q = __HOST_QUEUE__[host]
+            if (q && q.length > 0) {
+              var next = q.shift()
+              next()
+            }
+          })
+      }
+
+      var inflight = __HOST_INFLIGHT__[host] || 0
+      if (inflight < __MAX_CONCURRENT__) {
+        execute()
+      } else {
+        if (!__HOST_QUEUE__[host]) __HOST_QUEUE__[host] = []
+        __HOST_QUEUE__[host].push(execute)
+      }
+    })
   }
 `
   }
@@ -448,11 +512,12 @@ ${files.map((f, i) => {
 `
   }
 
-  // ⭐ 统一 wrapper（拦截 + 串行队列）
+  // ⭐ 统一 wrapper（拦截 + 有界并发）
+  // ⭐ v1.4.0 修改 2：guard 超时 30s → 15s
   if (needWrapper) {
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【统一 request wrapper】先拦截，再走串行队列
+  // 【统一 request wrapper】先拦截，再走有界并发队列
   // ═══════════════════════════════════════════════════════
   function __makeRequestWrapper__(origRequest, lxRef) {
     if (origRequest.__hywWrapped__) return origRequest
@@ -475,7 +540,7 @@ ${files.map((f, i) => {
         }
       }
 
-      // 2. 串行队列（仅共享后端）
+      // 2. 有界并发队列（仅共享后端）
       return __enqueueByHost__(host, function () {
         return new Promise(function (resolve) {
           var done = false
@@ -485,9 +550,9 @@ ${files.map((f, i) => {
             resolve()
           }
           var guard = setTimeout(function () {
-            console.log('[串行队列] host=' + host + ' 30s 超时释放')
+            console.log('[有界并发] host=' + host + ' 15s 超时释放')
             release()
-          }, 30000)
+          }, 15000)
           try {
             origRequest.call(lxRef || __origin_lx, url, options, function (err, resp, body) {
               clearTimeout(guard)
@@ -729,6 +794,9 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     const reqIdx = requested ? __qualityIndex__(requested) : 99
     const errors = []
 
+    // ⭐ v1.4.0 修改 3：每源软超时（防止慢源拖累整个链）
+    const __PER_SOURCE_TIMEOUT__ = ${PER_SOURCE_TIMEOUT}
+
     var __innerParams__ = params
     if (params.info && params.info.musicInfo) {
       var __src__ = params.info.musicInfo
@@ -748,10 +816,23 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
 
     for (const fileIdx of priorityList) {
       const h = __handlers__.find(function (x) { return x.fileIdx === fileIdx })
-      if (!h) continue
+      if (!h) {
+        console.log('[分发] 源' + (fileIdx + 1) + ' 未注册，跳过')
+        continue
+      }
       try {
-        const result = await h.handler(__innerParams__)
-        if (!result) continue
+        const result = await Promise.race([
+          h.handler(__innerParams__),
+          new Promise(function (_, reject) {
+            setTimeout(function () {
+              reject(new Error('超时(' + __PER_SOURCE_TIMEOUT__ + 'ms)'))
+            }, __PER_SOURCE_TIMEOUT__)
+          })
+        ])
+        if (!result) {
+          console.log('[分发] 源' + (fileIdx + 1) + ' 返回空，跳过')
+          continue
+        }
 
         const actual = await __probeUrl__(result)
         console.log('[分发] 源' + (fileIdx + 1) + ' 探测结果:', actual, '| URL前80:', String(result).slice(0, 80))
@@ -767,7 +848,9 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
         }
         return result
       } catch (e) {
-        errors.push('[源' + (fileIdx + 1) + '] ' + (e && e.message ? e.message : String(e)))
+        var __errMsg__ = (e && e.message) ? e.message : String(e)
+        console.log('[分发] 源' + (fileIdx + 1) + ' 失败:', __errMsg__)
+        errors.push('[源' + (fileIdx + 1) + '] ' + __errMsg__)
       }
     }
 
