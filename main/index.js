@@ -2,9 +2,6 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
-// ═══════════════════════════════════════════════════════
-// ⭐ 主进程兜底：任何未处理的 rejection / 异常都不会让 App 静默退出
-// ═══════════════════════════════════════════════════════
 process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandledRejection（已拦截，防止主进程退出）:', reason)
 })
@@ -50,10 +47,6 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
 })
-
-// ═══════════════════════════════════════════════════════
-// 原有 IPC（音质检测 / 后端检测 / 合并）
-// ═══════════════════════════════════════════════════════
 
 ipcMain.handle('select-sources-dir', async () => {
   const r = await dialog.showOpenDialog({
@@ -168,7 +161,7 @@ ipcMain.handle('run-shadow-test', async (event, { files, songs, options }) => {
   }
 })
 
-// ⭐ v2.0：merge-sources 接受 backendMode 和 hostScores
+// ⭐ v2.0：merge-sources 接受 backendMode、hostScores、shadowKeep、shadowDrop
 ipcMain.handle('merge-sources', async (event, {
   files,
   selection,
@@ -176,12 +169,16 @@ ipcMain.handle('merge-sources', async (event, {
   blockedHosts,
   backendMode,
   hostScores,
+  shadowKeep,
+  shadowDrop,
 }) => {
   try {
     const code = mergeSources(files, selection, report, {
       backendMode: backendMode === 'score' ? 'score' : 'blacklist',
       blockedHosts: blockedHosts || [],
       hostScores: hostScores || {},
+      shadowKeep: shadowKeep || [],
+      shadowDrop: shadowDrop || [],
     })
     const r = await dialog.showSaveDialog({
       title: '保存合并音源',
