@@ -41,16 +41,18 @@ async function analyzeSources(files) {
 }
 
 /**
- * ⭐ v2.0：options 新增 backendMode、hostScores
+ * ⭐ v2.0：options 新增 backendMode、hostScores、shadowKeep、shadowDrop
  *
  * @param {Array} files
  * @param {Object} selection
  * @param {Object|null} report
  * @param {Object} options
  *   {
- *     backendMode: 'blacklist' | 'score',   // 默认 'blacklist'
- *     blockedHosts: string[],               // blacklist 模式使用
- *     hostScores: Object,                   // score 模式使用
+ *     backendMode: 'blacklist' | 'score',
+ *     blockedHosts: string[],
+ *     hostScores: Object,
+ *     shadowKeep: string[],
+ *     shadowDrop: string[],
  *   }
  */
 function mergeSources(files, selection, report, options = {}) {
@@ -59,6 +61,8 @@ function mergeSources(files, selection, report, options = {}) {
   const hostScores = (options.hostScores && typeof options.hostScores === 'object')
     ? options.hostScores
     : {}
+  const shadowKeep = Array.isArray(options.shadowKeep) ? options.shadowKeep : []
+  const shadowDrop = Array.isArray(options.shadowDrop) ? options.shadowDrop : []
 
   const prunedFiles = files.map((file, idx) => {
     const keepPlatforms = selection[idx] || []
@@ -78,6 +82,8 @@ function mergeSources(files, selection, report, options = {}) {
     backendMode,
     blockedHosts,
     hostScores,
+    shadowKeep,
+    shadowDrop,
   })
 }
 
