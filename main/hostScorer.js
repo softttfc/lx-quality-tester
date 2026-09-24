@@ -1,14 +1,14 @@
 /**
  * 影子测试（Shadow Test）
  *
- * 与 backendTester 的"隔离测试"不同，本模块不做任何请求过滤：
- *   - 在真实运行环境下跑音源，收集每次请求的完整生命周期（耗时、状态码）
- *   - 通过"贡献判定"识别出"最终成功路径上的关键 host"
- *   - 聚合为 hostScores，供合并生成阶段做运行时动态评分
+ * 两种模式：
+ *   - 单轮模式（fullCoverage=false）：真实跑音源，只记录实际被调用的 host
+ *   - 多轮模式（fullCoverage=true）：每轮把"成功返回 URL 的 host"加入临时黑名单，
+ *     强制音源继续 fallback，直到没有新 host 成功，覆盖整条 fallback 链
  *
  * 输出结构：
  *   {
- *     _meta: { generatedAt, testSongCount, testFileCount },
+ *     _meta: { generatedAt, testSongCount, testFileCount, fullCoverage, rounds, roundSummaries },
  *     global: { 'host': { calls, rate, avgMs, avgOrder, contributionRate, contributions } },
  *     byFile: {
  *       'file.js': {
@@ -92,14 +92,20 @@ function buildMusicInfo(song, platform) {
 
 /**
  * 单次运行：加载音源 → 调 request → 等待 URL → 返回带 requestLog 的结果
- * ⭐ 与 backendTester.runOnce 不同：不做 allowedHosts 过滤，全放行
+ *
+ * @param {Array<string>} blockedHosts 多轮影子测试的临时黑名单
  */
-async function runOnceForShadow(scriptPath, song, platform, quality, timeout) {
-  const loaded = await loadApiSource(scriptPath, {
+async function runOnceForShadow(scriptPath, song, platform, quality, timeout, blockedHosts) {
+  const loadOptions = {
     logRequests: true,
     initTimeout: 10000,
     scriptTimeout: 20000,
-  })
+  }
+  if (Array.isArray(blockedHosts) && blockedHosts.length > 0) {
+    loadOptions.requestFilter = { blockedHosts }
+  }
+
+  const loaded = await loadApiSource(scriptPath, loadOptions)
 
   try {
     if (loaded.error) {
@@ -150,11 +156,8 @@ async function runOnceForShadow(scriptPath, song, platform, quality, timeout) {
 }
 
 /**
- * 贡献判定（折中策略）
- *   - 严格：从后往前找第一条 status='ok' 且非媒体域名的请求
- *   - 宽松（严格失败时）：找 endTime 前 5 秒内所有 status='ok' 的请求
- *
- * 返回：贡献 host 列表
+ * 贡献判定
+ *   - 取最终返回 URL 前 5 秒内所有 status='ok' 的非媒体 host，去重
  */
 const CONTRIBUTION_WINDOW_MS = 5000
 
@@ -163,73 +166,147 @@ function findContributors(run) {
   if (!url || !requestLog || requestLog.length === 0) return []
 
   const end = endTime || Date.now()
-
-  // 过滤媒体域名
   const relevant = requestLog.filter((e) => e.host && !isMediaHost(e.host))
   if (relevant.length === 0) return []
 
-  // 严格：所有 ok 且 endTime 早于返回时间的请求，按时间倒序
   const okList = relevant
     .filter((e) => e.status === 'ok' && typeof e.endTime === 'number' && e.endTime <= end)
     .sort((a, b) => (b.endTime || 0) - (a.endTime || 0))
 
-  if (okList.length === 0) {
-    return []
-  }
+  if (okList.length === 0) return []
 
-  // 折中：取时间窗口内所有 ok 的 host，去重
   const windowed = okList.filter((e) => (end - e.endTime) <= CONTRIBUTION_WINDOW_MS)
-  const contributors = [...new Set(windowed.map((e) => e.host))]
-  return contributors
+  return [...new Set(windowed.map((e) => e.host))]
 }
 
-/**
- * 主入口：运行影子测试
- *
- * @param {Array} files  [{ name, path }]
- * @param {Array} songs  [{ name, singer, interval, albumName, ids: {tx: {...}, ...} }]
- * @param {Object} options  { timeout, platforms }
- * @param {Function} onProgress
- * @returns {Object} hostScores
- */
-async function runShadowTest(files, songs, options = {}, onProgress = () => {}) {
-  const timeout = options.timeout || 15000
-  const platforms = options.platforms || ['kw', 'kg', 'tx', 'wy', 'mg']
+// ═══════════════════════════════════════════════════════
+// 单轮统计辅助
+// ═══════════════════════════════════════════════════════
 
-  // 统计累加器：global + byFile 三层
-  const scores = {
-    global: {},
-    byFile: {},
+function ensureRawHost(scope, host) {
+  if (!scope[host]) {
+    scope[host] = {
+      host,
+      calls: 0,
+      ok: 0,
+      fail: 0,
+      blocked: 0,
+      httpError: 0,
+      totalMs: 0,
+      durationCount: 0,
+      contributions: 0,
+      orderSum: 0,
+      orderCount: 0,
+    }
   }
+  return scope[host]
+}
 
-  function ensureHost(scope, host) {
-    if (!scope[host]) {
-      scope[host] = {
-        host,
-        calls: 0,
-        ok: 0,
-        fail: 0,
-        blocked: 0,
-        httpError: 0,
-        totalMs: 0,
-        durationCount: 0,
-        contributions: 0,
-        orderSum: 0,
-        orderCount: 0,
+function addRawStats(target, src) {
+  target.calls += src.calls || 0
+  target.ok += src.ok || 0
+  target.fail += src.fail || 0
+  target.blocked += src.blocked || 0
+  target.httpError += src.httpError || 0
+  target.totalMs += src.totalMs || 0
+  target.durationCount += src.durationCount || 0
+  target.contributions += src.contributions || 0
+  target.orderSum += src.orderSum || 0
+  target.orderCount += src.orderCount || 0
+}
+
+function mergeRawStats(aggregated, rawStats) {
+  for (const [host, s] of Object.entries(rawStats.global || {})) {
+    addRawStats(ensureRawHost(aggregated.global, host), s)
+  }
+  for (const [fileName, data] of Object.entries(rawStats.byFile || {})) {
+    if (!aggregated.byFile[fileName]) aggregated.byFile[fileName] = { byPlatform: {} }
+    for (const [platform, scope] of Object.entries(data.byPlatform || {})) {
+      if (!aggregated.byFile[fileName].byPlatform[platform]) {
+        aggregated.byFile[fileName].byPlatform[platform] = {}
+      }
+      const target = aggregated.byFile[fileName].byPlatform[platform]
+      for (const [host, s] of Object.entries(scope)) {
+        addRawStats(ensureRawHost(target, host), s)
       }
     }
-    return scope[host]
   }
+}
+
+function finalizeScope(scope) {
+  const out = {}
+  for (const [host, s] of Object.entries(scope)) {
+    const calls = s.calls || 0
+    const blocked = s.blocked || 0
+    const effectiveCalls = calls - blocked
+
+    const rate = effectiveCalls > 0 ? (s.ok / effectiveCalls) : 0
+    const avgMs = s.durationCount > 0 ? (s.totalMs / s.durationCount) : 0
+    const avgOrder = s.orderCount > 0 ? (s.orderSum / s.orderCount) : 0
+    const contributionRate = calls > 0 ? (s.contributions / calls) : 0
+
+    out[host] = {
+      calls,
+      ok: s.ok,
+      fail: s.fail,
+      blocked,
+      httpError: s.httpError,
+      contributions: s.contributions,
+      rate: +rate.toFixed(4),
+      avgMs: Math.round(avgMs),
+      avgOrder: +avgOrder.toFixed(2),
+      contributionRate: +contributionRate.toFixed(4),
+    }
+  }
+  return out
+}
+
+function finalizeRawStats(rawStats, songCount, fileCount, roundSummaries) {
+  const hostScores = {
+    _meta: {
+      generatedAt: Date.now(),
+      testSongCount: songCount,
+      testFileCount: fileCount,
+      fullCoverage: roundSummaries.length > 0,
+      rounds: roundSummaries.length,
+      roundSummaries,
+    },
+    global: finalizeScope(rawStats.global),
+    byFile: {},
+  }
+  for (const [fileName, data] of Object.entries(rawStats.byFile)) {
+    hostScores.byFile[fileName] = { byPlatform: {} }
+    for (const [platform, scope] of Object.entries(data.byPlatform)) {
+      hostScores.byFile[fileName].byPlatform[platform] = finalizeScope(scope)
+    }
+  }
+  return hostScores
+}
+
+// ═══════════════════════════════════════════════════════
+// 单轮影子测试
+// ═══════════════════════════════════════════════════════
+
+/**
+ * @param {Set<string>} blockedHosts 本轮生效的临时黑名单
+ * @returns {{ rawStats: { global, byFile }, newSuccessHosts: string[] }}
+ */
+async function runShadowTestSingleRound(files, songs, options, onProgress, blockedHosts) {
+  const timeout = options.timeout || 15000
+  const platforms = options.platforms || ['kw', 'kg', 'tx', 'wy', 'mg']
+  const blockedArr = blockedHosts instanceof Set ? [...blockedHosts] : (blockedHosts || [])
+
+  const rawStats = { global: {}, byFile: {} }
+  const newSuccessHosts = new Set()
 
   function ensureFilePlatform(fileName, platform) {
-    if (!scores.byFile[fileName]) scores.byFile[fileName] = { byPlatform: {} }
-    if (!scores.byFile[fileName].byPlatform[platform]) {
-      scores.byFile[fileName].byPlatform[platform] = {}
+    if (!rawStats.byFile[fileName]) rawStats.byFile[fileName] = { byPlatform: {} }
+    if (!rawStats.byFile[fileName].byPlatform[platform]) {
+      rawStats.byFile[fileName].byPlatform[platform] = {}
     }
-    return scores.byFile[fileName].byPlatform[platform]
+    return rawStats.byFile[fileName].byPlatform[platform]
   }
 
-  // 用于进度上报
   const totalRuns = files.length * platforms.length * songs.length
   let doneRuns = 0
 
@@ -237,7 +314,6 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
     const file = files[fi]
     const scriptPath = file.path || file
 
-    // 首次加载获取 sources 声明
     const first = await loadApiSource(scriptPath, { logRequests: false })
     let declaredSources = {}
     let firstError = null
@@ -251,12 +327,7 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
     }
 
     if (firstError) {
-      onProgress({
-        type: 'shadow-file-error',
-        file: file.name,
-        error: firstError,
-      })
-      // 未跑音源的 platforms × songs 也计入进度
+      onProgress({ type: 'shadow-file-error', file: file.name, error: firstError })
       doneRuns += platforms.length * songs.length
       onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
       continue
@@ -267,7 +338,6 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
     for (const platform of toTest) {
       const declared = declaredSources[platform]
       const qualitys = declared.qualitys || []
-      // 用声明的最高音质（通常是列表首个）来跑，减少重复
       const testQuality = qualitys[0] || '320k'
 
       for (let si = 0; si < songs.length; si++) {
@@ -283,17 +353,16 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
           total: totalRuns,
         })
 
-        const run = await runOnceForShadow(scriptPath, song, platform, testQuality, timeout)
+        const run = await runOnceForShadow(scriptPath, song, platform, testQuality, timeout, blockedArr)
 
-        // 累加每个 host 的调用统计（同时写入 global 和 byFile）
         if (run.requestLog && run.requestLog.length > 0) {
           const platformScope = ensureFilePlatform(file.name, platform)
           for (const entry of run.requestLog) {
             if (!entry.host) continue
             if (isMediaHost(entry.host)) continue
 
-            const g = ensureHost(scores.global, entry.host)
-            const f = ensureHost(platformScope, entry.host)
+            const g = ensureRawHost(rawStats.global, entry.host)
+            const f = ensureRawHost(platformScope, entry.host)
 
             for (const h of [g, f]) {
               h.calls++
@@ -313,28 +382,26 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
           }
         }
 
-        // 贡献判定（同时累加到 global 和 byFile）
         if (run.url) {
           const contributors = findContributors(run)
           const platformScope = ensureFilePlatform(file.name, platform)
           for (const host of contributors) {
-            const g = ensureHost(scores.global, host)
-            const f = ensureHost(platformScope, host)
+            const g = ensureRawHost(rawStats.global, host)
+            const f = ensureRawHost(platformScope, host)
             g.contributions++
             f.contributions++
+            // 只把"本轮未被黑名单拦截"的 host 记为成功
+            if (!blockedHosts.has(host)) {
+              newSuccessHosts.add(host)
+            }
           }
         }
 
         doneRuns++
-        onProgress({
-          type: 'shadow-progress',
-          done: doneRuns,
-          total: totalRuns,
-        })
+        onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
       }
     }
 
-    // 未参与的音源也要推进进度
     const skipped = platforms.length * songs.length - toTest.length * songs.length
     if (skipped > 0) {
       doneRuns += skipped
@@ -342,57 +409,83 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
     }
   }
 
-  // 把一个 scope（global 或 byFile[x].byPlatform[y]）转换为输出结构
-  function finalizeScope(scope) {
-    const out = {}
-    for (const [host, s] of Object.entries(scope)) {
-      const calls = s.calls || 0
-      const blocked = s.blocked || 0
-      const effectiveCalls = calls - blocked
+  return { rawStats, newSuccessHosts: [...newSuccessHosts] }
+}
 
-      const rate = effectiveCalls > 0 ? (s.ok / effectiveCalls) : 0
-      const avgMs = s.durationCount > 0 ? (s.totalMs / s.durationCount) : 0
-      const avgOrder = s.orderCount > 0 ? (s.orderSum / s.orderCount) : 0
-      const contributionRate = calls > 0 ? (s.contributions / calls) : 0
+// ═══════════════════════════════════════════════════════
+// 主入口
+// ═══════════════════════════════════════════════════════
 
-      out[host] = {
-        calls,
-        ok: s.ok,
-        fail: s.fail,
-        blocked,
-        httpError: s.httpError,
-        contributions: s.contributions,
-        rate: +rate.toFixed(4),
-        avgMs: Math.round(avgMs),
-        avgOrder: +avgOrder.toFixed(2),
-        contributionRate: +contributionRate.toFixed(4),
-      }
+/**
+ * @param {Array} files  [{ name, path }]
+ * @param {Array} songs  [{ name, singer, interval, albumName, ids: {tx: {...}, ...} }]
+ * @param {Object} options  { timeout, platforms, fullCoverage, maxRounds }
+ * @param {Function} onProgress
+ * @returns {Object} hostScores
+ */
+async function runShadowTest(files, songs, options = {}, onProgress = () => {}) {
+  const fullCoverage = options.fullCoverage === true
+  const maxRounds = Math.max(1, Math.min(options.maxRounds || 10, 30))
+
+  // ─── 单轮模式 ───
+  if (!fullCoverage) {
+    const single = await runShadowTestSingleRound(files, songs, options, onProgress, new Set())
+    const hostScores = finalizeRawStats(single.rawStats, songs.length, files.length, [])
+    onProgress({ type: 'shadow-done', hostCount: Object.keys(hostScores.global).length })
+    return hostScores
+  }
+
+  // ─── 多轮模式：每轮把成功 host 加入临时黑名单，强制 fallback ───
+  const blockedHosts = new Set()
+  const successfulHosts = new Set()
+  const aggregated = { global: {}, byFile: {} }
+  const roundSummaries = []
+
+  for (let round = 0; round < maxRounds; round++) {
+    onProgress({
+      type: 'shadow-round-start',
+      round: round + 1,
+      maxRounds,
+      blockedCount: blockedHosts.size,
+      blockedHosts: [...blockedHosts],
+    })
+
+    const roundResult = await runShadowTestSingleRound(
+      files,
+      songs,
+      { ...options, blockedHosts: [...blockedHosts] },
+      onProgress,
+      blockedHosts,
+    )
+
+    mergeRawStats(aggregated, roundResult.rawStats)
+
+    const newlySucceeded = roundResult.newSuccessHosts.filter((h) => !successfulHosts.has(h))
+    for (const h of newlySucceeded) {
+      successfulHosts.add(h)
+      blockedHosts.add(h)
     }
-    return out
+
+    roundSummaries.push({
+      round: round + 1,
+      newlySucceeded,
+      totalSuccess: successfulHosts.size,
+    })
+
+    onProgress({
+      type: 'shadow-round-done',
+      round: round + 1,
+      newlySucceeded,
+      totalSuccess: successfulHosts.size,
+      totalBlocked: blockedHosts.size,
+    })
+
+    // 没有新 host 成功 → 覆盖完毕
+    if (newlySucceeded.length === 0) break
   }
 
-  const hostScores = {
-    _meta: {
-      generatedAt: Date.now(),
-      testSongCount: songs.length,
-      testFileCount: files.length,
-    },
-    global: finalizeScope(scores.global),
-    byFile: {},
-  }
-
-  for (const [fileName, data] of Object.entries(scores.byFile)) {
-    hostScores.byFile[fileName] = { byPlatform: {} }
-    for (const [platform, scope] of Object.entries(data.byPlatform)) {
-      hostScores.byFile[fileName].byPlatform[platform] = finalizeScope(scope)
-    }
-  }
-
-  onProgress({
-    type: 'shadow-done',
-    hostCount: Object.keys(hostScores.global).length,
-  })
-
+  const hostScores = finalizeRawStats(aggregated, songs.length, files.length, roundSummaries)
+  onProgress({ type: 'shadow-done', hostCount: Object.keys(hostScores.global).length })
   return hostScores
 }
 
