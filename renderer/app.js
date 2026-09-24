@@ -29,7 +29,7 @@ $('btnSelectDir').addEventListener('click', async () => {
     '<div style="color:#bbb">没有 .js 文件</div>'
 })
 
-/* ═════════ 自动搜索 ID（不再写入任何输入框） ═════════ */
+/* ═════════ 自动搜索 ID ═════════ */
 $('btnSearch').addEventListener('click', async () => {
   const name = $('songName').value.trim()
   const singer = $('singer').value.trim()
@@ -173,7 +173,6 @@ async function prepareMergeData() {
 
     refreshInitRequestFlags()
     updateMergeButtonState()
-    // ⭐ v1.3.0：刷新共享后端提示
     refreshSharedHostsHint()
   } catch (err) {
     $('mergeStatus').textContent = '分析失败: ' + (err.message || err)
@@ -181,7 +180,7 @@ async function prepareMergeData() {
   }
 }
 
-/* ═════════ v1.3.0：共享后端检测提示 ═════════ */
+/* ═════════ 共享后端检测提示 ═════════ */
 function scheduleSharedHint() {
   if (sharedHintTimer) clearTimeout(sharedHintTimer)
   sharedHintTimer = setTimeout(() => {
@@ -199,7 +198,6 @@ async function refreshSharedHostsHint() {
     return
   }
 
-  // 从当前 UI 收集 selection
   const fileIndexMap = new Map()
   analyzedFiles.forEach((f, idx) => fileIndexMap.set(f.name, idx))
   const selection = {}
@@ -228,7 +226,7 @@ async function refreshSharedHostsHint() {
       selection,
     })
     if (r && r.hosts && r.hosts.length > 0) {
-      el.innerHTML = `检测到 ${r.hosts.length} 个共享后端，生成时会启用串行保护：<br>` +
+      el.innerHTML = `检测到 ${r.hosts.length} 个共享后端，生成时会启用有界并发保护：<br>` +
         r.hosts.map((h) => `<code>${escapeHtml(h)}</code>`).join(' ')
       el.style.color = '#007aff'
     } else {
@@ -269,7 +267,7 @@ function refreshInitRequestFlags() {
   })
 }
 
-/* ═════════ v2.0：测试互斥锁 ═════════ */
+/* ═════════ 测试互斥锁 ═════════ */
 function acquireHeavyLock(which) {
   if (heavyTestLock) {
     const nameMap = { backend: '后端检测', shadow: '影子测试' }
@@ -288,7 +286,7 @@ function releaseHeavyLock() {
   $('btnRunShadowTest').disabled = false
 }
 
-/* ═════════ 后端检测（保留原功能，仅加互斥锁） ═════════ */
+/* ═════════ 后端检测 ═════════ */
 $('btnTestBackends').addEventListener('click', async () => {
   if (!availableFiles.length) return alert('请先选择音源目录')
   const songName = $('songName').value.trim()
@@ -713,7 +711,9 @@ $('btnRunShadowTest').addEventListener('click', async () => {
 
     hostScores = r.hostScores
     renderShadowScorePanel(r.hostScores)
-    const hostCount = Object.keys(r.hostScores).filter(k => k !== '_meta').length
+    injectShadowPanels(r.hostScores)
+    const globalScope = r.hostScores.global || {}
+    const hostCount = Object.keys(globalScope).length
     $('shadowStatus').textContent = `完成：收集到 ${hostCount} 个 host 的评分数据`
     $('shadowStatus').style.color = '#34c759'
     updateBackendModeStatus()
@@ -727,17 +727,26 @@ $('btnRunShadowTest').addEventListener('click', async () => {
   }
 })
 
+/* ⭐ v1.5.0：新评分公式 rate*0.9 + speed*0.06 + order*0.04 */
 function computeScore(s) {
   if (!s || typeof s !== 'object') return 0
   const rate = typeof s.rate === 'number' ? s.rate : 0
   const speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
   const orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
-  return rate * 0.6 + speedScore * 0.3 + orderScore * 0.1
+  return rate * 0.9 + speedScore * 0.06 + orderScore * 0.04
+}
+
+/* ⭐ v1.5.0：默认勾选规则（与运行时拦截一致） */
+function shouldKeepByScore(s) {
+  if ((s.calls || 0) < 5) return true
+  if ((s.rate || 0) >= 0.1) return true
+  return false
 }
 
 function renderShadowScorePanel(hostScores) {
   if (!hostScores) return
-  const entries = Object.entries(hostScores).filter(([k]) => k !== '_meta')
+  const globalScope = hostScores.global || hostScores
+  const entries = Object.entries(globalScope).filter(([k]) => k !== '_meta')
   if (entries.length === 0) {
     $('shadowSummary').style.display = 'block'
     $('shadowSummary').innerHTML = '<div style="color:#999;text-align:center;padding:8px">未收集到任何 host 数据</div>'
@@ -786,7 +795,183 @@ function renderShadowScorePanel(hostScores) {
   `
 }
 
-/* ═════════ v2.0：合并策略 ═════════ */
+/* ⭐ v1.5.0：影子评分卡片面板（按子源、按平台） */
+function injectShadowPanels(hostScores) {
+  document.querySelectorAll('.shadow-panel').forEach((el) => el.remove())
+  document.querySelectorAll('.standalone-shadow-card').forEach((el) => el.remove())
+
+  const byFile = hostScores && hostScores.byFile ? hostScores.byFile : {}
+  if (Object.keys(byFile).length === 0) return
+
+  let anyInjected = false
+
+  for (const [file, data] of Object.entries(byFile)) {
+    const card = findCardByFile(file)
+    if (!card) continue
+    const body = card.querySelector('.api-body')
+    if (!body) continue
+
+    const platforms = Object.entries(data.byPlatform || {}).filter(
+      ([, hosts]) => Object.keys(hosts).length > 0
+    )
+    if (platforms.length === 0) continue
+
+    const panelHtml = `
+      <details class="shadow-panel" open>
+        <summary class="shadow-panel-summary">
+          <span>📊 影子评分（${platforms.length} 个平台）</span>
+        </summary>
+        <div class="shadow-panel-body">
+          ${platforms.map(([platform, hosts]) => renderShadowPlatform(file, platform, hosts)).join('')}
+        </div>
+      </details>`
+
+    body.insertAdjacentHTML('beforeend', panelHtml)
+    anyInjected = true
+  }
+
+  if (!anyInjected) renderShadowPanelsStandalone(hostScores)
+
+  bindShadowPanelEvents()
+}
+
+function renderShadowPanelsStandalone(hostScores) {
+  const container = document.getElementById('results')
+  if (!container) return
+  const byFile = hostScores && hostScores.byFile ? hostScores.byFile : {}
+
+  const cardsHtml = Object.entries(byFile)
+    .map(([file, data]) => {
+      const platforms = Object.entries(data.byPlatform || {}).filter(
+        ([, hosts]) => Object.keys(hosts).length > 0
+      )
+      if (platforms.length === 0) return ''
+      return `
+        <div class="api-card standalone-shadow-card" data-file="${escapeHtml(file)}">
+          <div class="api-header">
+            <div class="api-title">
+              <span class="icon">▼</span>
+              <span>📊 ${escapeHtml(file)}</span>
+              <span class="api-meta">影子评分（未运行音质测试）</span>
+            </div>
+          </div>
+          <div class="api-body">
+            <details class="shadow-panel" open>
+              <summary class="shadow-panel-summary">
+                <span>📊 影子评分（${platforms.length} 个平台）</span>
+              </summary>
+              <div class="shadow-panel-body">
+                ${platforms.map(([platform, hosts]) => renderShadowPlatform(file, platform, hosts)).join('')}
+              </div>
+            </details>
+          </div>
+        </div>`
+    })
+    .filter(Boolean)
+    .join('')
+
+  if (!cardsHtml) return
+  container.innerHTML = cardsHtml
+
+  container.querySelectorAll('.api-header').forEach((h) => {
+    h.addEventListener('click', () => {
+      const body = h.parentElement.querySelector('.api-body')
+      const icon = h.querySelector('.icon')
+      const hidden = body.style.display === 'none'
+      body.style.display = hidden ? 'block' : 'none'
+      icon.textContent = hidden ? '▼' : '▶'
+    })
+  })
+}
+
+function renderShadowPlatform(file, platform, hosts) {
+  const entries = Object.values(hosts || {})
+  if (entries.length === 0) return ''
+
+  entries.sort((a, b) => computeScore(b) - computeScore(a))
+
+  const rows = entries.map((h) => {
+    const score = computeScore(h)
+    const keep = shouldKeepByScore(h)
+    const icon = score >= 0.8 ? '🟢' : score >= 0.5 ? '🟡' : '🔴'
+    const ratePct = ((h.rate || 0) * 100).toFixed(0)
+
+    return `
+      <label class="shadow-host-row">
+        <input type="checkbox" class="shadow-host-cb"
+               data-file="${escapeHtml(file)}"
+               data-platform="${escapeHtml(platform)}"
+               data-host="${escapeHtml(h.host)}"
+               ${keep ? 'checked' : ''}>
+        <span class="shadow-host-icon">${icon}</span>
+        <span class="shadow-host-name">${escapeHtml(h.host)}</span>
+        <span class="shadow-host-num">${h.calls || 0}</span>
+        <span class="shadow-host-num">${ratePct}%</span>
+        <span class="shadow-host-num">${h.avgMs || 0}ms</span>
+        <span class="shadow-host-num">#${h.avgOrder || 0}</span>
+        <span class="shadow-host-score">${(score * 100).toFixed(0)}</span>
+      </label>`
+  }).join('')
+
+  return `
+    <div class="shadow-platform">
+      <div class="shadow-platform-header">
+        <span class="shadow-platform-name">${escapeHtml(platform)}</span>
+        <span class="shadow-platform-actions">
+          <a href="javascript:void(0)" data-shadow-action="all-usable" data-file="${escapeHtml(file)}" data-platform="${escapeHtml(platform)}">仅保留可用</a>
+          <a href="javascript:void(0)" data-shadow-action="all" data-file="${escapeHtml(file)}" data-platform="${escapeHtml(platform)}">全选</a>
+          <a href="javascript:void(0)" data-shadow-action="none" data-file="${escapeHtml(file)}" data-platform="${escapeHtml(platform)}">全不选</a>
+        </span>
+      </div>
+      <div class="shadow-host-list">${rows}</div>
+    </div>`
+}
+
+function findShadowEntry(file, platform, host) {
+  if (!hostScores || !hostScores.byFile) return null
+  const f = hostScores.byFile[file]
+  if (!f || !f.byPlatform || !f.byPlatform[platform]) return null
+  return f.byPlatform[platform][host] || null
+}
+
+function bindShadowPanelEvents() {
+  document.querySelectorAll('.shadow-host-cb').forEach((cb) => {
+    if (cb.dataset.bound === '1') return
+    cb.dataset.bound = '1'
+    cb.addEventListener('change', () => {})
+  })
+  document.querySelectorAll('[data-shadow-action]').forEach((btn) => {
+    if (btn.dataset.bound === '1') return
+    btn.dataset.bound = '1'
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      const action = btn.dataset.shadowAction
+      const file = btn.dataset.file
+      const platform = btn.dataset.platform
+      document.querySelectorAll(`.shadow-host-cb[data-file="${cssEscape(file)}"][data-platform="${cssEscape(platform)}"]`).forEach((cb) => {
+        if (action === 'all') cb.checked = true
+        else if (action === 'none') cb.checked = false
+        else if (action === 'all-usable') {
+          const s = findShadowEntry(file, platform, cb.dataset.host)
+          cb.checked = s ? shouldKeepByScore(s) : true
+        }
+      })
+    })
+  })
+}
+
+function collectShadowSelection() {
+  const keep = new Set()
+  const drop = new Set()
+  document.querySelectorAll('.shadow-host-cb').forEach((cb) => {
+    const host = cb.dataset.host
+    if (cb.checked) keep.add(host)
+    else drop.add(host)
+  })
+  return { keep: [...keep], drop: [...drop] }
+}
+
+/* ═════════ 合并策略 ═════════ */
 function getBackendMode() {
   const el = document.querySelector('input[name="backendMode"]:checked')
   return el ? el.value : 'blacklist'
@@ -810,10 +995,16 @@ function updateBackendModeStatus() {
       el.style.color = '#ff9500'
     }
   } else {
-    if (hostScores && Object.keys(hostScores).length > 1) {
-      const n = Object.keys(hostScores).filter((k) => k !== '_meta').length
-      el.textContent = `✓ 影子测试数据已就绪（${n} 个 host 评分）`
-      el.style.color = '#34c759'
+    if (hostScores) {
+      const globalScope = hostScores.global || hostScores
+      const n = Object.keys(globalScope).length
+      if (n > 0) {
+        el.textContent = `✓ 影子测试数据已就绪（${n} 个 host 评分）`
+        el.style.color = '#34c759'
+      } else {
+        el.textContent = '⚠ 尚未运行影子测试，请先运行'
+        el.style.color = '#ff9500'
+      }
     } else {
       el.textContent = '⚠ 尚未运行影子测试，请先运行'
       el.style.color = '#ff9500'
@@ -913,7 +1104,6 @@ function applyAllFilters() {
   })
 
   updateMergeButtonState()
-  // ⭐ v1.3.0：刷新共享后端提示
   scheduleSharedHint()
 }
 
@@ -922,14 +1112,18 @@ function updateMergeButtonState() {
   $('btnGenerateMerge').disabled = !analyzedFiles || !anyChecked
 }
 
-/* ═════════ 生成合并音源（⭐ v2.0：按策略收集参数） ═════════ */
+/* ═════════ 生成合并音源 ═════════ */
 $('btnGenerateMerge').addEventListener('click', async () => {
   if (!analyzedFiles) return alert('请先完成测试')
 
   const mode = getBackendMode()
 
   if (mode === 'score') {
-    if (!hostScores || Object.keys(hostScores).filter(k => k !== '_meta').length === 0) {
+    if (!hostScores) {
+      return alert('评分模式需要先运行「影子测试」并获取到至少一个 host 的评分数据')
+    }
+    const globalScope = hostScores.global || hostScores
+    if (Object.keys(globalScope).length === 0) {
       return alert('评分模式需要先运行「影子测试」并获取到至少一个 host 的评分数据')
     }
   }
@@ -972,6 +1166,9 @@ $('btnGenerateMerge').addEventListener('click', async () => {
   }
 
   let blockedHosts = []
+  let shadowKeep = []
+  let shadowDrop = []
+
   if (mode === 'blacklist') {
     blockedHosts = collectBlockedHosts()
     if (blockedHosts.length > 0) {
@@ -983,6 +1180,10 @@ $('btnGenerateMerge').addEventListener('click', async () => {
       )
       if (!ok) return
     }
+  } else {
+    const shadow = collectShadowSelection()
+    shadowKeep = shadow.keep
+    shadowDrop = shadow.drop
   }
 
   $('btnGenerateMerge').disabled = true
@@ -999,6 +1200,8 @@ $('btnGenerateMerge').addEventListener('click', async () => {
       backendMode: mode,
       blockedHosts,
       hostScores,
+      shadowKeep,
+      shadowDrop,
     })
     if (r && r.ok) {
       $('mergeStatus').textContent = '已生成: ' + r.path
@@ -1023,218 +1226,4 @@ function setRunning(running) {
   $('btnSave').disabled = running || !lastReport
 }
 
-function handleProgress(p) {
-  if (p.type === 'file-progress') {
-    const pct = Math.round(((p.current - 1) / p.total) * 100)
-    $('progressText').textContent = `[${p.current}/${p.total}] ${p.file}`
-    $('progressBar').style.width = pct + '%'
-    $('progressPercent').textContent = pct + '%'
-  } else if (p.type === 'platform-start') {
-    $('progressText').textContent = `${p.file} · ${p.name}`
-  } else if (p.type === 'quality-start') {
-    $('progressText').textContent = `${p.file} · ${p.platform} · ${p.quality}`
-  } else if (p.type === 'api-error') {
-    $('progressText').textContent = `${p.file}: ${p.error}`
-  }
-}
-
-function renderResult(report) {
-  const { summary, results } = report
-  $('summary').style.display = 'grid'
-  $('summary').innerHTML = `
-    <div class="summary-item"><div class="num">${summary.totalApis}</div><div class="label">音源总数</div></div>
-    <div class="summary-item"><div class="num">${summary.availableApis}</div><div class="label">可用音源</div></div>
-    <div class="summary-item"><div class="num">${summary.availablePlatforms}/${summary.totalPlatforms}</div><div class="label">可用平台</div></div>
-    <div class="summary-item"><div class="num">${summary.availableQualities}/${summary.totalQualities}</div><div class="label">可用音质</div></div>
-    <div class="summary-item"><div class="num">${summary.downgradedQualities || 0}</div><div class="label">降级音质</div></div>
-    <div class="summary-item"><div class="num">${summary.unplayableQualities || 0}</div><div class="label">不可播放</div></div>
-  `
-  $('results').innerHTML = results.map(renderApiCard).join('')
-
-  document.querySelectorAll('.api-header').forEach((h) => {
-    h.addEventListener('click', () => {
-      const body = h.parentElement.querySelector('.api-body')
-      const icon = h.querySelector('.icon')
-      const hidden = body.style.display === 'none'
-      body.style.display = hidden ? 'block' : 'none'
-      icon.textContent = hidden ? '▼' : '▶'
-    })
-  })
-
-  document.querySelectorAll('.merge-checkbox').forEach((cb) => {
-    cb.addEventListener('change', () => {
-      updateMergeButtonState()
-      scheduleSharedHint()
-    })
-  })
-
-  updateRiskSummary()
-  applyAllFilters()
-
-  if (backendResults && backendResults.length) {
-    injectBackendPanels(backendResults)
-  }
-}
-
-function renderPlainBadge(info) {
-  if (!info) return ''
-  if (info.plainKind === 'weak') {
-    const title = info.plainReason ? escapeHtml(info.plainReason) : '疑似混淆'
-    return `<span class="badge badge-encrypted" title="${title}">⚠️ 疑似混淆</span>`
-  }
-  if (info.plain === false) {
-    const title = info.plainReason ? '未采用明文：' + escapeHtml(info.plainReason) : '未采用明文'
-    return `<span class="badge badge-encrypted" title="${title}">🔒 非明文</span>`
-  }
-  return ''
-}
-
-function renderApiCard(api) {
-  const avail = api.platforms.some((p) => p.available)
-  const info = api.info || {}
-  const meta = [info.name, info.version, info.author].filter(Boolean).join(' · ')
-
-  const plainBadge = renderPlainBadge(info)
-  const riskBadge = renderRiskBadge(info)
-  const riskPanel = renderRiskPanel(info)
-
-  const isPlain = info.plain !== false
-  const riskLevel = (info.risk && info.risk.level) || 'clean'
-  const hasExploit = !!(info.risk && info.risk.hasExploit)
-  const hasInitReq = !!(api.info && api.info.hasInitRequests)
-
-  let body
-  if (api.error) {
-    body = `<div class="api-error">${escapeHtml(api.error)}</div>`
-  } else if (!api.platforms.length) {
-    body = '<div class="api-error">没有平台被测试</div>'
-  } else {
-    body = api.platforms.map((p) => renderPlatform(p, api.file)).join('')
-  }
-
-  return `
-    <div class="api-card"
-         data-file="${escapeHtml(api.file)}"
-         data-plain="${isPlain ? 'true' : 'false'}"
-         data-plain-kind="${escapeHtml(info.plainKind || '')}"
-         data-risk-level="${riskLevel}"
-         data-has-exploit="${hasExploit ? 'true' : 'false'}"
-         data-has-init-requests="${hasInitReq ? 'true' : 'false'}">
-      <div class="api-header">
-        <div class="api-title">
-          <span class="icon">▼</span>
-          <span>${avail ? '✅' : '❌'} ${escapeHtml(api.file)}${plainBadge}${riskBadge}</span>
-          <span class="api-meta">${escapeHtml(meta)}</span>
-        </div>
-      </div>
-      <div class="api-body">${riskPanel}${body}</div>
-    </div>`
-}
-
-function renderPlatform(p, apiFile) {
-  const rows = p.qualities.map((q) => {
-    let actualCell
-    if (!q.urlAccessible) {
-      actualCell = '<span class="status-fail">—</span>'
-    } else if (q.downgrade) {
-      actualCell = `<span class="status-warn">${escapeHtml(q.actualQuality || '?')}</span>`
-    } else if (q.actualQuality) {
-      actualCell = `<span class="status-ok">${escapeHtml(q.actualQuality)}</span>`
-    } else {
-      actualCell = '<span style="color:#999">未知</span>'
-    }
-
-    let playableCell
-    if (q.playable === true) {
-      playableCell = '<span class="status-ok">✅</span>'
-    } else if (q.playable === false) {
-      playableCell = `<span class="status-fail" title="${escapeHtml(q.playableError || '')}">❌</span>`
-    } else {
-      playableCell = '<span style="color:#999">—</span>'
-    }
-
-    const rowClass = q.downgrade
-      ? 'row-downgrade'
-      : (q.urlAccessible && q.playable === false ? 'row-unplayable' : '')
-
-    return `
-    <tr class="${rowClass}">
-      <td>${escapeHtml(q.quality)}</td>
-      <td>${q.declared ? '✅' : '—'}</td>
-      <td class="${q.urlObtained ? 'status-ok' : 'status-fail'}">${q.urlObtained ? '✅' : '❌'}</td>
-      <td class="${q.urlAccessible ? 'status-ok' : 'status-fail'}">${q.urlAccessible ? '✅' : '❌'}</td>
-      <td>${playableCell}</td>
-      <td>${actualCell}</td>
-      <td>${q.duration}ms</td>
-      <td class="url-cell" title="${escapeHtml(q.url || q.error || '')}">${escapeHtml(q.url || q.error || '—')}</td>
-    </tr>`
-  }).join('')
-
-  const downgradeText = p.downgradedCount ? `降级: <span class="status-warn">${p.downgradedCount}</span> ` : ''
-  const unplayableText = p.unplayableCount ? `不可播: <span class="status-fail">${p.unplayableCount}</span> ` : ''
-
-  return `
-    <div class="platform">
-      <div class="platform-header">
-        <div class="platform-name">
-          <input type="checkbox"
-                 class="merge-checkbox"
-                 data-file="${escapeHtml(apiFile)}"
-                 data-source="${escapeHtml(p.source)}"
-                 ${p.available ? 'checked' : ''}>
-          ${p.available ? '✅' : '❌'} ${escapeHtml(p.name)} (${escapeHtml(p.source)})
-          ${p.bestQuality ? `<span class="best-tag">实际最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
-        </div>
-        <div class="platform-stats">
-          通过: <span class="status-ok">${p.passedCount}</span> ${downgradeText}${unplayableText}/ 错误: <span class="status-fail">${p.failedCount}</span>
-        </div>
-      </div>
-      <table class="quality-table">
-        <thead>
-          <tr><th>请求音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>可播</th><th>实际音质</th><th>耗时</th><th>URL / 错误</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`
-}
-
-function escapeHtml(s) {
-  if (s == null) return ''
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-/* ═════════ 标签页切换 ═════════ */
-;(function initTabs() {
-  const tabs = document.querySelectorAll('.tabs .tab')
-  const panels = document.querySelectorAll('.tab-content .tab-panel')
-  if (!tabs.length || !panels.length) return
-
-  let discoverInitialized = false
-
-  function activate(name) {
-    tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name))
-    panels.forEach((p) => p.classList.toggle('active', p.dataset.tab === name))
-    if (name === 'discover' && !discoverInitialized) {
-      discoverInitialized = true
-      if (typeof window.initDiscoverTab === 'function') {
-        try {
-          window.initDiscoverTab()
-        } catch (err) {
-          console.error('[discover] 初始化失败', err)
-        }
-      }
-    }
-  }
-
-  tabs.forEach((t) => {
-    t.addEventListener('click', () => activate(t.dataset.tab))
-  })
-})()
-
-/* ═════════ 初始化：更新策略状态提示 ═════════ */
-updateBackendModeStatus()
+function handleProgress
