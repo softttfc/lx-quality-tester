@@ -1,7 +1,14 @@
 /**
  * 生成合并后的音源文件
- * @version 1.4.0
+ * @version 1.5.0
  * @changelog
+ *   v1.5.0:
+ *     - [1] 评分公式改为 rate*0.9 + speed*0.06 + order*0.04
+ *     - [2] 拦截条件改为 calls >= 5 && score < 0.15 && rate < 0.1
+ *     - [3] 新增官方 API 白名单（后缀匹配）
+ *     - [4] 新增用户勾选覆盖 __FORCE_KEEP__ / __FORCE_DROP__
+ *     - [5] sanitizeHostScores 从 hostScores.global 提取运行时评分
+ *     - [6] 取消时间衰减功能
  *   v1.4.0:
  *     - [1] 共享后端从"完全串行"改为"有界并发"（__MAX_CONCURRENT__=3）
  *     - [2] guard 超时 30s → 15s
@@ -22,6 +29,21 @@ const PER_SOURCE_TIMEOUT = 4000
 
 // ⭐ v1.4.0：共享后端每 host 最大并发数
 const MAX_CONCURRENT_PER_HOST = 3
+
+// ⭐ v1.5.0：评分模式运行时白名单后缀（官方 API / 媒体 CDN）
+const RUNTIME_PROTECTED_SUFFIXES = [
+  'y.qq.com',
+  'qqmusic.qq.com',
+  'stream.qqmusic.qq.com',
+  'music.163.com',
+  'music.126.net',
+  'kugou.com',
+  'kuwo.cn',
+  'migu.cn',
+  'c.nf',
+  'gdstudio.xyz',
+  'lxmusic.xn--fiqs8s',
+]
 
 // ═══════════════════════════════════════════════════════
 // 【块 C】受保护域名（防止用户误屏蔽官方 API / 媒体 CDN）
@@ -88,9 +110,7 @@ function extractHosts(script) {
   const re2 = /['"]((?:[a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}(?::\d+)?)['"]/g
   while ((m = re2.exec(script)) !== null) {
     const h = m[1].toLowerCase().replace(/:\d+$/, '')
-    // 排除明显的静态资源文件名
     if (/\.(js|json|css|png|jpg|jpeg|gif|svg|woff|woff2|ttf|ico|mp3|flac|m4a|mp4|webp)$/i.test(h)) continue
-    // 排除过于简短的（如 a.b）
     if (h.length < 6) continue
     hosts.add(h)
   }
@@ -155,11 +175,6 @@ function computeParamScore(script) {
 
 // ═══════════════════════════════════════════════════════
 // ⭐ v1.4.0 重构：统计子源内部所有 BACKENDS 数组的总后端数
-//   - 旧版用非贪婪正则 /BACKENDS?\s*=\s*\[([\s\S]*?)\]/ 只匹配到第一个 `]` 就停止，
-//     如果数组里嵌套了对象数组（如 urls: []），或脚本有多个 BACKENDS 数组
-//     （如墨澜的 TX/WY/KW/KG/MG 各有独立数组），就只能算到第一个数组的部分元素。
-//   - 新版遍历所有 `BACKENDS?=` 声明，用括号深度匹配找到对应的 `]`，
-//     对每个数组体内的 `{ name: ` 计数并累加。
 // ═══════════════════════════════════════════════════════
 function countBackends(script) {
   if (typeof script !== 'string' || !script) return 0
@@ -216,17 +231,25 @@ function computeScores(report) {
 }
 
 /**
- * 把 hostScores 里能被 JSON 安全化的部分提取出来（去掉 _meta 和非法值）
+ * ⭐ v1.5.0：从 hostScores.global 提取运行时评分数据
+ *   - 兼容旧结构（直接传入扁平 host->score 的 hostScores）
+ *   - 只保留数值字段，防止 JSON 注入
  */
 function sanitizeHostScores(hostScores) {
   const out = {}
   if (!hostScores || typeof hostScores !== 'object') return out
-  for (const [host, v] of Object.entries(hostScores)) {
-    if (host === '_meta') continue
+
+  const source = (hostScores.global && typeof hostScores.global === 'object')
+    ? hostScores.global
+    : hostScores
+
+  const NUMERIC_FIELDS = ['calls', 'ok', 'fail', 'blocked', 'httpError',
+                          'contributions', 'rate', 'avgMs', 'avgOrder', 'contributionRate']
+
+  for (const [host, v] of Object.entries(source)) {
+    if (host === '_meta' || host === 'global' || host === 'byFile') continue
     if (!v || typeof v !== 'object') continue
     const cleaned = {}
-    const NUMERIC_FIELDS = ['calls', 'ok', 'fail', 'blocked', 'httpError',
-                            'contributions', 'rate', 'avgMs', 'avgOrder', 'contributionRate']
     for (const f of NUMERIC_FIELDS) {
       if (typeof v[f] === 'number' && isFinite(v[f])) cleaned[f] = v[f]
     }
@@ -246,12 +269,16 @@ function sanitizeHostScores(hostScores) {
  *     backendMode: 'blacklist' | 'score',
  *     blockedHosts: string[],
  *     hostScores: Object,
+ *     shadowKeep: string[],
+ *     shadowDrop: string[],
  *   }
  */
 function generateMergedCode(files, selection, report, options = {}) {
   const backendMode = options.backendMode === 'score' ? 'score' : 'blacklist'
   const rawBlockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
   const hostScores = options.hostScores && typeof options.hostScores === 'object' ? options.hostScores : {}
+  const shadowKeep = Array.isArray(options.shadowKeep) ? options.shadowKeep : []
+  const shadowDrop = Array.isArray(options.shadowDrop) ? options.shadowDrop : []
 
   // ⭐ blacklist 模式：走原有保护过滤
   // ⭐ score 模式：完全不使用 blockedHosts
@@ -286,19 +313,14 @@ function generateMergedCode(files, selection, report, options = {}) {
       const nameB = files[b]?.name || ''
       const sa = (scores[nameA] && scores[nameA][p]) || { bestIdx: 99, passCount: 0 }
       const sb = (scores[nameB] && scores[nameB][p]) || { bestIdx: 99, passCount: 0 }
-      // 1. 音质最高优先
       if (sa.bestIdx !== sb.bestIdx) return sa.bestIdx - sb.bestIdx
-      // 2. 通过数多优先
       if (sa.passCount !== sb.passCount) return sb.passCount - sa.passCount
-      // 3. 参数规范度高优先
       const pa = computeParamScore(files[a]?.content || '')
       const pb = computeParamScore(files[b]?.content || '')
       if (pa !== pb) return pb - pa
-      // 4. 内部后端数量少优先
       const ba = countBackends(files[a]?.content || '')
       const bb = countBackends(files[b]?.content || '')
       if (ba !== bb) return ba - bb
-      // 5. 保持原顺序
       return a - b
     })
   }
@@ -352,12 +374,11 @@ ${files.map((f, i) => {
         return `${p}: ${q}/${s.passCount}`
       }).join(', ') + ' }'
     : ''
-  // ⭐ v1.4.0：追加后端数量信息
   const backendCount = countBackends(f.content || '')
   const backendInfo = backendCount > 0 ? ` (后端: ${backendCount})` : ''
   return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}${backendInfo}`
 }).join('\n')}
- * @version 1.4.0
+ * @version 1.5.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -390,25 +411,9 @@ ${files.map((f, i) => {
       }
     } catch (_) {}
   })()
-`
 
   // ═══════════════════════════════════════════════════════
-  // 【模式注入】根据模式决定是否需要注入 wrapper
-  // ═══════════════════════════════════════════════════════
-  const needWrapper =
-    (backendMode === 'blacklist' && blockedHosts.length > 0) ||
-    (backendMode === 'score' && Object.keys(sanitizedScores).length > 0) ||
-    sharedHosts.length > 0
-
-  // ⭐ v1.4.0 修改 1：共享后端从"完全串行"改为"有界并发"
-  if (needWrapper) {
-    code += `
-  // ═══════════════════════════════════════════════════════
-  // 【共享后端有界并发】被多个子源共用的 host 限制最大并发数，
-  // 既避免瞬间打爆后端，也避免"完全串行"造成的队头阻塞。
-  //   - MAX_CONCURRENT = 1 等价于完全串行（旧行为，会队头阻塞）
-  //   - MAX_CONCURRENT = 无限 等价于完全并行（旧旧行为，会打爆后端）
-  //   - MAX_CONCURRENT = ${MAX_CONCURRENT_PER_HOST} 是折中：不打爆，也不被慢请求拖累
+  // 【共享后端有界并发】被多个子源共用的 host 限制最大并发数
   // ═══════════════════════════════════════════════════════
   var __SHARED_HOSTS__ = new Set(${JSON.stringify(sharedHosts)})
   var __MAX_CONCURRENT__ = ${MAX_CONCURRENT_PER_HOST}
@@ -444,7 +449,6 @@ ${files.map((f, i) => {
     })
   }
 `
-  }
 
   // ⭐ 黑名单模式
   if (backendMode === 'blacklist' && blockedHosts.length > 0) {
@@ -469,17 +473,34 @@ ${files.map((f, i) => {
 `
   }
 
-  // ⭐ 评分模式
+  // ⭐ 评分模式（v1.5.0）
   if (backendMode === 'score' && Object.keys(sanitizedScores).length > 0) {
+    const protectedSuffixesJson = JSON.stringify(RUNTIME_PROTECTED_SUFFIXES)
+    const keepJson = JSON.stringify(shadowKeep)
+    const dropJson = JSON.stringify(shadowDrop)
+
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【影子评分】基于历史运行数据动态限制低质量后端
-  //   - rate: 成功率；avgMs: 平均耗时；avgOrder: 平均第几次被调用
-  //   - 综合分数 = rate*0.6 + speedScore*0.3 + orderScore*0.1
-  //   - 拦截条件（保守）：分数 < 0.15 且 rate < 0.1 且 calls >= 3
+  // 【影子评分 v2】基于历史运行数据动态限制低质量后端
+  //   - 公式：score = rate*0.9 + speedScore*0.06 + orderScore*0.04
+  //   - 拦截条件：calls >= 5 && score < 0.15 && rate < 0.1
+  //   - 官方 API 白名单：后缀匹配，永不拦截
+  //   - 用户勾选覆盖：__FORCE_KEEP__（保留）/ __FORCE_DROP__（拦截）
   // ═══════════════════════════════════════════════════════
   var __HOST_SCORES__ = ${JSON.stringify(sanitizedScores)}
   var __scoreCache__ = {}
+  var __FORCE_KEEP__ = new Set(${keepJson})
+  var __FORCE_DROP__ = new Set(${dropJson})
+  var __PROTECTED_SUFFIXES__ = ${protectedSuffixesJson}
+
+  function __isProtectedHost__(host) {
+    if (!host) return false
+    for (var i = 0; i < __PROTECTED_SUFFIXES__.length; i++) {
+      var s = __PROTECTED_SUFFIXES__[i]
+      if (host === s || host.endsWith('.' + s)) return true
+    }
+    return false
+  }
 
   function __scoreHost__(host) {
     if (__scoreCache__[host] !== undefined) return __scoreCache__[host]
@@ -488,34 +509,47 @@ ${files.map((f, i) => {
     var rateScore = (typeof s.rate === 'number') ? s.rate : 1.0
     var speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
     var orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
-    return __scoreCache__[host] = rateScore * 0.6 + speedScore * 0.3 + orderScore * 0.1
+    return __scoreCache__[host] = rateScore * 0.9 + speedScore * 0.06 + orderScore * 0.04
+  }
+
+  function __makeBlockErr__(host) {
+    var err = new Error('getaddrinfo ENOTFOUND ' + host)
+    err.code = 'ENOTFOUND'
+    err.errno = -3008
+    err.syscall = 'getaddrinfo'
+    err.hostname = host
+    err.blockedByScorer = true
+    return err
   }
 
   function __interceptRequest__(host) {
     if (!host) return null
+
+    // 1. 官方 API 白名单：永不拦截
+    if (__isProtectedHost__(host)) return null
+
+    // 2. 用户手动覆盖
+    if (__FORCE_KEEP__.has(host)) return null
+    if (__FORCE_DROP__.has(host)) return __makeBlockErr__(host)
+
+    // 3. 自动评分拦截
     var s = __HOST_SCORES__[host]
     if (!s) return null
-    var score = __scoreHost__(host)
+
     var calls = s.calls || 0
+    if (calls < 5) return null
+
     var rate = (typeof s.rate === 'number') ? s.rate : 1.0
-    if (score < 0.15 && rate < 0.1 && calls >= 3) {
-      var err = new Error('getaddrinfo ENOTFOUND ' + host)
-      err.code = 'ENOTFOUND'
-      err.errno = -3008
-      err.syscall = 'getaddrinfo'
-      err.hostname = host
-      err.blockedByScorer = true
-      return err
-    }
+    var score = __scoreHost__(host)
+    if (score < 0.15 && rate < 0.1) return __makeBlockErr__(host)
+
     return null
   }
 `
   }
 
   // ⭐ 统一 wrapper（拦截 + 有界并发）
-  // ⭐ v1.4.0 修改 2：guard 超时 30s → 15s
-  if (needWrapper) {
-    code += `
+  code += `
   // ═══════════════════════════════════════════════════════
   // 【统一 request wrapper】先拦截，再走有界并发队列
   // ═══════════════════════════════════════════════════════
@@ -576,10 +610,7 @@ ${files.map((f, i) => {
     wrapped.__hywWrapped__ = true
     return wrapped
   }
-`
-  }
 
-  code += `
   // ═══════════════════════════════════════════════════════
   // 平台优先级
   // ═══════════════════════════════════════════════════════
@@ -595,7 +626,7 @@ ${files.map((f, i) => {
 
     let content = file.content
 
-    // ⭐ AST 黑名单删除（仅 blacklist 模式且非空时执行）
+    // AST 黑名单删除（仅 blacklist 模式且非空时执行）
     if (backendMode === 'blacklist' && blockedHosts.length > 0) {
       const r = applyBackendBlacklist(content, blockedHosts)
       if (!r.report.error) {
@@ -794,7 +825,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
     const reqIdx = requested ? __qualityIndex__(requested) : 99
     const errors = []
 
-    // ⭐ v1.4.0 修改 3：每源软超时（防止慢源拖累整个链）
     const __PER_SOURCE_TIMEOUT__ = ${PER_SOURCE_TIMEOUT}
 
     var __innerParams__ = params
@@ -837,12 +867,10 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
         const actual = await __probeUrl__(result)
         console.log('[分发] 源' + (fileIdx + 1) + ' 探测结果:', actual, '| URL前80:', String(result).slice(0, 80))
 
-        // ⭐ v1.3.0：探测失败/未知 → 直接放行（探测只是优化，不是判据）
         if (actual === null || actual === '__UNKNOWN_OK__') {
           console.log('[分发] 源' + (fileIdx + 1) + ' 探测失败/未知，放行')
           return result
         }
-        // ⭐ v1.3.0：音质降级也放行（用户听了不满意再换源）
         if (__qualityIndex__(actual) > reqIdx) {
           console.log('[分发] 源' + (fileIdx + 1) + ' 降级 ' + requested + '→' + actual + '，放行')
         }
