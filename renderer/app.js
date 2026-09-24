@@ -1226,4 +1226,230 @@ function setRunning(running) {
   $('btnSave').disabled = running || !lastReport
 }
 
-function handleProgress
+function handleProgress(p) {
+  if (p.type === 'file-progress') {
+    const pct = Math.round(((p.current - 1) / p.total) * 100)
+    $('progressText').textContent = `[${p.current}/${p.total}] ${p.file}`
+    $('progressBar').style.width = pct + '%'
+    $('progressPercent').textContent = pct + '%'
+  } else if (p.type === 'platform-start') {
+    $('progressText').textContent = `${p.file} · ${p.name}`
+  } else if (p.type === 'quality-start') {
+    $('progressText').textContent = `${p.file} · ${p.platform} · ${p.quality}`
+  } else if (p.type === 'api-error') {
+    $('progressText').textContent = `${p.file}: ${p.error}`
+  }
+}
+
+function renderResult(report) {
+  const { summary, results } = report
+  $('summary').style.display = 'grid'
+  $('summary').innerHTML = `
+    <div class="summary-item"><div class="num">${summary.totalApis}</div><div class="label">音源总数</div></div>
+    <div class="summary-item"><div class="num">${summary.availableApis}</div><div class="label">可用音源</div></div>
+    <div class="summary-item"><div class="num">${summary.availablePlatforms}/${summary.totalPlatforms}</div><div class="label">可用平台</div></div>
+    <div class="summary-item"><div class="num">${summary.availableQualities}/${summary.totalQualities}</div><div class="label">可用音质</div></div>
+    <div class="summary-item"><div class="num">${summary.downgradedQualities || 0}</div><div class="label">降级音质</div></div>
+    <div class="summary-item"><div class="num">${summary.unplayableQualities || 0}</div><div class="label">不可播放</div></div>
+  `
+  $('results').innerHTML = results.map(renderApiCard).join('')
+
+  document.querySelectorAll('.api-header').forEach((h) => {
+    h.addEventListener('click', () => {
+      const body = h.parentElement.querySelector('.api-body')
+      const icon = h.querySelector('.icon')
+      const hidden = body.style.display === 'none'
+      body.style.display = hidden ? 'block' : 'none'
+      icon.textContent = hidden ? '▼' : '▶'
+    })
+  })
+
+  document.querySelectorAll('.merge-checkbox').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      updateMergeButtonState()
+      scheduleSharedHint()
+    })
+  })
+
+  updateRiskSummary()
+  applyAllFilters()
+
+  if (backendResults && backendResults.length) {
+    injectBackendPanels(backendResults)
+  }
+  if (hostScores) {
+    injectShadowPanels(hostScores)
+  }
+}
+
+function renderPlainBadge(info) {
+  if (!info) return ''
+  if (info.plainKind === 'weak') {
+    const title = info.plainReason ? escapeHtml(info.plainReason) : '疑似混淆'
+    return `<span class="badge badge-encrypted" title="${title}">⚠️ 疑似混淆</span>`
+  }
+  if (info.plain === false) {
+    const title = info.plainReason ? '未采用明文：' + escapeHtml(info.plainReason) : '未采用明文'
+    return `<span class="badge badge-encrypted" title="${title}">🔒 非明文</span>`
+  }
+  return ''
+}
+
+function renderApiCard(api) {
+  const avail = api.platforms.some((p) => p.available)
+  const info = api.info || {}
+  const meta = [info.name, info.version, info.author].filter(Boolean).join(' · ')
+
+  const plainBadge = renderPlainBadge(info)
+  const riskBadge = renderRiskBadge(info)
+  const riskPanel = renderRiskPanel(info)
+
+  const isPlain = info.plain !== false
+  const riskLevel = (info.risk && info.risk.level) || 'clean'
+  const hasExploit = !!(info.risk && info.risk.hasExploit)
+  const hasInitReq = !!(api.info && api.info.hasInitRequests)
+
+  let body
+  if (api.error) {
+    body = `<div class="api-error">${escapeHtml(api.error)}</div>`
+  } else if (!api.platforms.length) {
+    body = '<div class="api-error">没有平台被测试</div>'
+  } else {
+    body = api.platforms.map((p) => renderPlatform(p, api.file)).join('')
+  }
+
+  return `
+    <div class="api-card"
+         data-file="${escapeHtml(api.file)}"
+         data-plain="${isPlain ? 'true' : 'false'}"
+         data-plain-kind="${escapeHtml(info.plainKind || '')}"
+         data-risk-level="${riskLevel}"
+         data-has-exploit="${hasExploit ? 'true' : 'false'}"
+         data-has-init-requests="${hasInitReq ? 'true' : 'false'}">
+      <div class="api-header">
+        <div class="api-title">
+          <span class="icon">▼</span>
+          <span>${avail ? '✅' : '❌'} ${escapeHtml(api.file)}${plainBadge}${riskBadge}</span>
+          <span class="api-meta">${escapeHtml(meta)}</span>
+        </div>
+      </div>
+      <div class="api-body">${riskPanel}${body}</div>
+    </div>`
+}
+
+function renderPlatform(p, apiFile) {
+  const rows = p.qualities.map((q) => {
+    let actualCell
+    if (!q.urlAccessible) {
+      actualCell = '<span class="status-fail">—</span>'
+    } else if (q.downgrade) {
+      actualCell = `<span class="status-warn">${escapeHtml(q.actualQuality || '?')}</span>`
+    } else if (q.actualQuality) {
+      actualCell = `<span class="status-ok">${escapeHtml(q.actualQuality)}</span>`
+    } else {
+      actualCell = '<span style="color:#999">未知</span>'
+    }
+
+    let playableCell
+    if (q.playable === true) {
+      playableCell = '<span class="status-ok">✅</span>'
+    } else if (q.playable === false) {
+      playableCell = `<span class="status-fail" title="${escapeHtml(q.playableError || '')}">❌</span>`
+    } else {
+      playableCell = '<span style="color:#999">—</span>'
+    }
+
+    const rowClass = q.downgrade
+      ? 'row-downgrade'
+      : (q.urlAccessible && q.playable === false ? 'row-unplayable' : '')
+
+    return `
+    <tr class="${rowClass}">
+      <td>${escapeHtml(q.quality)}</td>
+      <td>${q.declared ? '✅' : '—'}</td>
+      <td class="${q.urlObtained ? 'status-ok' : 'status-fail'}">${q.urlObtained ? '✅' : '❌'}</td>
+      <td class="${q.urlAccessible ? 'status-ok' : 'status-fail'}">${q.urlAccessible ? '✅' : '❌'}</td>
+      <td>${playableCell}</td>
+      <td>${actualCell}</td>
+      <td>${q.duration}ms</td>
+      <td class="url-cell" title="${escapeHtml(q.url || q.error || '')}">${escapeHtml(q.url || q.error || '—')}</td>
+    </tr>`
+  }).join('')
+
+  const downgradeText = p.downgradedCount ? `降级: <span class="status-warn">${p.downgradedCount}</span> ` : ''
+  const unplayableText = p.unplayableCount ? `不可播: <span class="status-fail">${p.unplayableCount}</span> ` : ''
+
+  return `
+    <div class="platform">
+      <div class="platform-header">
+        <div class="platform-name">
+          <input type="checkbox"
+                 class="merge-checkbox"
+                 data-file="${escapeHtml(apiFile)}"
+                 data-source="${escapeHtml(p.source)}"
+                 ${p.available ? 'checked' : ''}>
+          ${p.available ? '✅' : '❌'} ${escapeHtml(p.name)} (${escapeHtml(p.source)})
+          ${p.bestQuality ? `<span class="best-tag">实际最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
+        </div>
+        <div class="platform-stats">
+          通过: <span class="status-ok">${p.passedCount}</span> ${downgradeText}${unplayableText}/ 错误: <span class="status-fail">${p.failedCount}</span>
+        </div>
+      </div>
+      <table class="quality-table">
+        <thead>
+          <tr><th>请求音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>可播</th><th>实际音质</th><th>耗时</th><th>URL / 错误</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`
+}
+
+function findCardByFile(file) {
+  let card = document.querySelector(`.api-card[data-file="${cssEscape(file)}"]`)
+  if (card) return card
+  return [...document.querySelectorAll('.api-card')].find((c) => {
+    const title = c.querySelector('.api-title')?.textContent || ''
+    return title.includes(file)
+  }) || null
+}
+
+function escapeHtml(s) {
+  if (s == null) return ''
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/* ═════════ 标签页切换 ═════════ */
+;(function initTabs() {
+  const tabs = document.querySelectorAll('.tabs .tab')
+  const panels = document.querySelectorAll('.tab-content .tab-panel')
+  if (!tabs.length || !panels.length) return
+
+  let discoverInitialized = false
+
+  function activate(name) {
+    tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name))
+    panels.forEach((p) => p.classList.toggle('active', p.dataset.tab === name))
+    if (name === 'discover' && !discoverInitialized) {
+      discoverInitialized = true
+      if (typeof window.initDiscoverTab === 'function') {
+        try {
+          window.initDiscoverTab()
+        } catch (err) {
+          console.error('[discover] 初始化失败', err)
+        }
+      }
+    }
+  }
+
+  tabs.forEach((t) => {
+    t.addEventListener('click', () => activate(t.dataset.tab))
+  })
+})()
+
+/* ═════════ 初始化：更新策略状态提示 ═════════ */
+updateBackendModeStatus()
