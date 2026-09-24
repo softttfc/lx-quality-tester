@@ -256,19 +256,33 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
           statusCode: null,
           status: 'pending',
           error: null,
+          blockedByMultiRound: false,
         }
         requestLog.push(logEntry)
       }
 
-      // ⭐ v1.9：请求过滤（拦截时返回"假响应"，避免源内部直接访问 resp.body 抛错）
+      // ⭐ v2.1：请求过滤（支持白名单 allowedHosts + 黑名单 blockedHosts）
+      //   - 多轮影子测试用 blockedHosts 强制音源 fallback
+      //   - backendTester 隔离测试用 allowedHosts 只放行单个 host
       if (requestFilter && host) {
-        const allowed = requestFilter.allowedHosts
         let isAllowed = true
+
+        const allowed = requestFilter.allowedHosts
         if (Array.isArray(allowed)) {
           isAllowed = allowed.includes(host)
         } else if (allowed instanceof Set) {
           isAllowed = allowed.has(host)
         }
+
+        // ⭐ 黑名单优先判定
+        const blocked = requestFilter.blockedHosts
+        if (blocked) {
+          let isBlocked = false
+          if (Array.isArray(blocked)) isBlocked = blocked.includes(host)
+          else if (blocked instanceof Set) isBlocked = blocked.has(host)
+          if (isBlocked) isAllowed = false
+        }
+
         if (!isAllowed) {
           const err = new Error('ECONNREFUSED: blocked by request filter')
           err.code = 'ECONNREFUSED'
@@ -278,12 +292,14 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             headers: {},
             body: '',
           }
-          // ⭐ v2.0：补全 logEntry 状态
           if (logEntry) {
             logEntry.endTime = Date.now()
             logEntry.duration = logEntry.endTime - logEntry.timestamp
             logEntry.status = 'blocked'
             logEntry.error = 'ECONNREFUSED'
+            // ⭐ 标记为多轮影子测试的人为拦截（区别于黑名单模式）
+            logEntry.blockedByMultiRound = Array.isArray(requestFilter.blockedHosts) ||
+              requestFilter.blockedHosts instanceof Set
           }
           trackedSetImmediate(() => {
             try {
@@ -342,7 +358,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             headers: res.headers,
             body: data,
           }
-          // ⭐ v2.0：补全 logEntry 状态
           if (logEntry) {
             logEntry.endTime = Date.now()
             logEntry.duration = logEntry.endTime - logEntry.timestamp
@@ -360,7 +375,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         })
         .catch((err) => {
           if (aborted) return
-          // ⭐ v2.0：补全 logEntry 状态
           if (logEntry) {
             logEntry.endTime = Date.now()
             logEntry.duration = logEntry.endTime - logEntry.timestamp
