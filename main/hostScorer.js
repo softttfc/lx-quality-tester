@@ -9,7 +9,15 @@
  * 输出结构：
  *   {
  *     _meta: { generatedAt, testSongCount, testFileCount },
- *     'host': { calls, rate, avgMs, avgOrder, contributionRate, contributions }
+ *     global: { 'host': { calls, rate, avgMs, avgOrder, contributionRate, contributions } },
+ *     byFile: {
+ *       'file.js': {
+ *         byPlatform: {
+ *           kw: { 'host': { calls, rate, ... } },
+ *           ...
+ *         }
+ *       }
+ *     }
  *   }
  */
 
@@ -166,8 +174,6 @@ function findContributors(run) {
     .sort((a, b) => (b.endTime || 0) - (a.endTime || 0))
 
   if (okList.length === 0) {
-    // 严格失败，降级宽松：找窗口内所有非 fail 的（含 http-error？一般不会）
-    // 实际上没有 ok 的记录说明整条链都是 fail，贡献源无
     return []
   }
 
@@ -190,12 +196,15 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
   const timeout = options.timeout || 15000
   const platforms = options.platforms || ['kw', 'kg', 'tx', 'wy', 'mg']
 
-  // 统计累加器
-  const scores = {}
+  // 统计累加器：global + byFile 三层
+  const scores = {
+    global: {},
+    byFile: {},
+  }
 
-  function ensureHost(host) {
-    if (!scores[host]) {
-      scores[host] = {
+  function ensureHost(scope, host) {
+    if (!scope[host]) {
+      scope[host] = {
         host,
         calls: 0,
         ok: 0,
@@ -209,7 +218,15 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
         orderCount: 0,
       }
     }
-    return scores[host]
+    return scope[host]
+  }
+
+  function ensureFilePlatform(fileName, platform) {
+    if (!scores.byFile[fileName]) scores.byFile[fileName] = { byPlatform: {} }
+    if (!scores.byFile[fileName].byPlatform[platform]) {
+      scores.byFile[fileName].byPlatform[platform] = {}
+    }
+    return scores.byFile[fileName].byPlatform[platform]
   }
 
   // 用于进度上报
@@ -268,34 +285,43 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
 
         const run = await runOnceForShadow(scriptPath, song, platform, testQuality, timeout)
 
-        // 累加每个 host 的调用统计
+        // 累加每个 host 的调用统计（同时写入 global 和 byFile）
         if (run.requestLog && run.requestLog.length > 0) {
+          const platformScope = ensureFilePlatform(file.name, platform)
           for (const entry of run.requestLog) {
             if (!entry.host) continue
             if (isMediaHost(entry.host)) continue
-            const h = ensureHost(entry.host)
-            h.calls++
-            if (entry.status === 'ok') h.ok++
-            else if (entry.status === 'fail') h.fail++
-            else if (entry.status === 'blocked') h.blocked++
-            else if (entry.status === 'http-error') h.httpError++
-            if (typeof entry.duration === 'number' && entry.duration > 0) {
-              h.totalMs += entry.duration
-              h.durationCount++
-            }
-            if (typeof entry.sequence === 'number' && entry.sequence > 0) {
-              h.orderSum += entry.sequence
-              h.orderCount++
+
+            const g = ensureHost(scores.global, entry.host)
+            const f = ensureHost(platformScope, entry.host)
+
+            for (const h of [g, f]) {
+              h.calls++
+              if (entry.status === 'ok') h.ok++
+              else if (entry.status === 'fail') h.fail++
+              else if (entry.status === 'blocked') h.blocked++
+              else if (entry.status === 'http-error') h.httpError++
+              if (typeof entry.duration === 'number' && entry.duration > 0) {
+                h.totalMs += entry.duration
+                h.durationCount++
+              }
+              if (typeof entry.sequence === 'number' && entry.sequence > 0) {
+                h.orderSum += entry.sequence
+                h.orderCount++
+              }
             }
           }
         }
 
-        // 贡献判定
+        // 贡献判定（同时累加到 global 和 byFile）
         if (run.url) {
           const contributors = findContributors(run)
+          const platformScope = ensureFilePlatform(file.name, platform)
           for (const host of contributors) {
-            const h = ensureHost(host)
-            h.contributions++
+            const g = ensureHost(scores.global, host)
+            const f = ensureHost(platformScope, host)
+            g.contributions++
+            f.contributions++
           }
         }
 
@@ -316,49 +342,55 @@ async function runShadowTest(files, songs, options = {}, onProgress = () => {}) 
     }
   }
 
-  // 转换为 hostScores 结构
+  // 把一个 scope（global 或 byFile[x].byPlatform[y]）转换为输出结构
+  function finalizeScope(scope) {
+    const out = {}
+    for (const [host, s] of Object.entries(scope)) {
+      const calls = s.calls || 0
+      const blocked = s.blocked || 0
+      const effectiveCalls = calls - blocked
+
+      const rate = effectiveCalls > 0 ? (s.ok / effectiveCalls) : 0
+      const avgMs = s.durationCount > 0 ? (s.totalMs / s.durationCount) : 0
+      const avgOrder = s.orderCount > 0 ? (s.orderSum / s.orderCount) : 0
+      const contributionRate = calls > 0 ? (s.contributions / calls) : 0
+
+      out[host] = {
+        calls,
+        ok: s.ok,
+        fail: s.fail,
+        blocked,
+        httpError: s.httpError,
+        contributions: s.contributions,
+        rate: +rate.toFixed(4),
+        avgMs: Math.round(avgMs),
+        avgOrder: +avgOrder.toFixed(2),
+        contributionRate: +contributionRate.toFixed(4),
+      }
+    }
+    return out
+  }
+
   const hostScores = {
     _meta: {
       generatedAt: Date.now(),
       testSongCount: songs.length,
       testFileCount: files.length,
     },
+    global: finalizeScope(scores.global),
+    byFile: {},
   }
 
-  for (const [host, s] of Object.entries(scores)) {
-    const calls = s.calls || 0
-    const blocked = s.blocked || 0
-    const effectiveCalls = calls - blocked
-
-    // rate：成功率（排除 blocked，因为它们是被主动屏蔽的，不是真实失败）
-    const rate = effectiveCalls > 0 ? (s.ok / effectiveCalls) : 0
-
-    // avgMs：平均耗时（只统计有 duration 的）
-    const avgMs = s.durationCount > 0 ? (s.totalMs / s.durationCount) : 0
-
-    // avgOrder：平均第几次被调用
-    const avgOrder = s.orderCount > 0 ? (s.orderSum / s.orderCount) : 0
-
-    // contributionRate：贡献率（在成功路径上成为"最后一跳"的比例）
-    const contributionRate = calls > 0 ? (s.contributions / calls) : 0
-
-    hostScores[host] = {
-      calls,
-      ok: s.ok,
-      fail: s.fail,
-      blocked,
-      httpError: s.httpError,
-      contributions: s.contributions,
-      rate: +rate.toFixed(4),
-      avgMs: Math.round(avgMs),
-      avgOrder: +avgOrder.toFixed(2),
-      contributionRate: +contributionRate.toFixed(4),
+  for (const [fileName, data] of Object.entries(scores.byFile)) {
+    hostScores.byFile[fileName] = { byPlatform: {} }
+    for (const [platform, scope] of Object.entries(data.byPlatform)) {
+      hostScores.byFile[fileName].byPlatform[platform] = finalizeScope(scope)
     }
   }
 
   onProgress({
     type: 'shadow-done',
-    hostCount: Object.keys(hostScores).length - 1, // 排除 _meta
+    hostCount: Object.keys(hostScores.global).length,
   })
 
   return hostScores
