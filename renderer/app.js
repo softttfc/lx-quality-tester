@@ -636,13 +636,26 @@ $('btnRunShadowTest').addEventListener('click', async () => {
 
   if (!acquireHeavyLock('shadow')) return
 
+  // ⭐ v2.1：读取"覆盖全部 host"开关（默认开启）
+  const fullCoverageEl = $('shadowFullCoverage')
+  const fullCoverage = fullCoverageEl ? fullCoverageEl.checked : true
+
   $('btnRunShadowTest').textContent = '影子测试中...'
   $('shadowStatus').textContent = '正在搜索歌曲 ID...'
   $('shadowStatus').style.color = '#007aff'
   $('shadowSummary').style.display = 'none'
 
   shadowUnsubscribe = window.api.onShadowProgress((p) => {
-    if (p.type === 'shadow-run') {
+    if (p.type === 'shadow-round-start') {
+      $('shadowStatus').textContent =
+        `第 ${p.round}/${p.maxRounds} 轮开始（已屏蔽 ${p.blockedCount} 个 host）`
+      $('shadowStatus').style.color = '#6633aa'
+    } else if (p.type === 'shadow-round-done') {
+      $('shadowStatus').textContent =
+        `第 ${p.round} 轮完成：新增成功 ${p.newlySucceeded.length} 个 host，` +
+        `累计成功 ${p.totalSuccess} 个，累计屏蔽 ${p.totalBlocked} 个`
+      $('shadowStatus').style.color = '#34c759'
+    } else if (p.type === 'shadow-run') {
       $('shadowStatus').textContent =
         `[${p.done + 1}/${p.total}] ${p.file} · ${p.platform} · ${p.song}`
     } else if (p.type === 'shadow-progress') {
@@ -694,13 +707,20 @@ $('btnRunShadowTest').addEventListener('click', async () => {
       return
     }
 
-    $('shadowStatus').textContent = `开始影子测试，共 ${songs.length} 首歌曲 × ${availableFiles.length} 个音源`
+    $('shadowStatus').textContent = fullCoverage
+      ? `开始多轮影子测试（覆盖全部 host），共 ${songs.length} 首歌曲 × ${availableFiles.length} 个音源`
+      : `开始单轮影子测试，共 ${songs.length} 首歌曲 × ${availableFiles.length} 个音源`
     $('shadowStatus').style.color = '#007aff'
 
     const r = await window.api.runShadowTest({
       files: availableFiles,
       songs,
-      options: { platforms: ['kw', 'kg', 'tx', 'wy', 'mg'], timeout: 15000 },
+      options: {
+        platforms: ['kw', 'kg', 'tx', 'wy', 'mg'],
+        timeout: 15000,
+        fullCoverage,
+        maxRounds: 10,
+      },
     })
 
     if (!r.ok) {
@@ -714,7 +734,9 @@ $('btnRunShadowTest').addEventListener('click', async () => {
     injectShadowPanels(r.hostScores)
     const globalScope = r.hostScores.global || {}
     const hostCount = Object.keys(globalScope).length
-    $('shadowStatus').textContent = `完成：收集到 ${hostCount} 个 host 的评分数据`
+    const meta = r.hostScores._meta || {}
+    const roundInfo = meta.fullCoverage ? `（${meta.rounds} 轮全覆盖）` : '（单轮）'
+    $('shadowStatus').textContent = `完成：收集到 ${hostCount} 个 host 的评分数据${roundInfo}`
     $('shadowStatus').style.color = '#34c759'
     updateBackendModeStatus()
   } catch (err) {
@@ -774,7 +796,8 @@ function renderShadowScorePanel(hostScores) {
 
   const meta = hostScores._meta || {}
   const metaText = meta.testSongCount
-    ? `（${meta.testSongCount} 首歌曲 × ${meta.testFileCount} 个音源）`
+    ? `（${meta.testSongCount} 首歌曲 × ${meta.testFileCount} 个音源` +
+      (meta.fullCoverage ? `，共 ${meta.rounds} 轮全覆盖` : '') + `）`
     : ''
 
   $('shadowSummary').style.display = 'block'
@@ -885,7 +908,8 @@ function renderShadowPanelsStandalone(hostScores) {
 }
 
 function renderShadowPlatform(file, platform, hosts) {
-  const entries = Object.values(hosts || {})
+  // ⭐ 修复：用 Object.entries 保留 host（key 就是域名）
+  const entries = Object.entries(hosts || {}).map(([host, data]) => ({ host, ...data }))
   if (entries.length === 0) return ''
 
   entries.sort((a, b) => computeScore(b) - computeScore(a))
@@ -999,7 +1023,9 @@ function updateBackendModeStatus() {
       const globalScope = hostScores.global || hostScores
       const n = Object.keys(globalScope).length
       if (n > 0) {
-        el.textContent = `✓ 影子测试数据已就绪（${n} 个 host 评分）`
+        const meta = hostScores._meta || {}
+        const roundInfo = meta.fullCoverage ? `，${meta.rounds} 轮全覆盖` : ''
+        el.textContent = `✓ 影子测试数据已就绪（${n} 个 host 评分${roundInfo}）`
         el.style.color = '#34c759'
       } else {
         el.textContent = '⚠ 尚未运行影子测试，请先运行'
