@@ -8,14 +8,14 @@
 </head>
 <body>
   <div class="app">
-    <!-- ⭐ 标签页切换 -->
+    <!-- 标签页切换 -->
     <div class="tabs">
       <button class="tab active" data-tab="quality">音源质量测试</button>
       <button class="tab" data-tab="discover">音源检索</button>
     </div>
 
     <div class="tab-content">
-      <!-- ═══════════════ 标签页一：音源质量测试 ═══════════════ -->
+      <!-- 标签页一：音源质量测试 -->
       <div class="tab-panel active" data-tab="quality">
         <aside class="sidebar">
           <h1>🎵 LX 音源测试</h1>
@@ -84,7 +84,7 @@
             </label>
           </div>
 
-          <!-- ⭐ v1.6：后端检测 -->
+          <!-- 后端检测 -->
           <div class="section">
             <label>后端检测</label>
             <div class="hint">检测每个平台的后端（域名）连通性与音质。勾选要<b>保留</b>的后端，未勾选的将在"黑名单模式"下被屏蔽。</div>
@@ -93,12 +93,13 @@
             <div id="backendSummary" class="backend-summary" style="display:none"></div>
           </div>
 
-          <!-- ⭐ v2.0：影子测试 -->
+          <!-- 影子测试 -->
           <div class="section">
             <label>影子测试</label>
             <div class="hint">
               真实运行环境下跑音源，收集每个后端的成功率、耗时、调用顺序。<br>
-              生成合并音源时可选"评分模式"来使用这些数据做动态优化。
+              生成合并音源时可选"评分模式"来使用这些数据做动态优化。<br>
+              <b>影子评分面板的勾选只影响评分模式，与后端检测面板独立。</b>
             </div>
             <textarea id="shadowSongs" placeholder="每行一首，格式：歌名 - 歌手&#10;也可以只填歌名（首次会自动搜索各平台 ID）"></textarea>
             <div class="row" style="gap:6px">
@@ -136,7 +137,6 @@
               过滤开启时，被隐藏的音源不可参与合并。<br>
               <b>初始化阶段发请求</b>的子源会被自动排除。
             </div>
-            <!-- ⭐ v1.3.0：共享后端提示 -->
             <div class="shared-hosts-hint" id="sharedHostsHint">
               勾选平台后自动检测共享后端
             </div>
@@ -160,7 +160,7 @@
         </main>
       </div>
 
-      <!-- ═══════════════ 标签页二：音源检索 ═══════════════ -->
+      <!-- 标签页二：音源检索 -->
       <div class="tab-panel" data-tab="discover">
         <div id="discoverContainer" class="discover-tab"></div>
       </div>
