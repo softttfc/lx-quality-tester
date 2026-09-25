@@ -129,6 +129,11 @@
             <label>合并策略</label>
             <div class="backend-mode-row">
               <label>
+                <input type="radio" name="backendMode" value="none">
+                <span>🚫 无优化</span>
+              </label>
+              <div class="mode-hint">不屏蔽任何后端，纯合并（未做任何测试时选此项）</div>
+              <label>
                 <input type="radio" name="backendMode" value="blacklist" checked>
                 <span>🔒 黑名单模式</span>
               </label>
