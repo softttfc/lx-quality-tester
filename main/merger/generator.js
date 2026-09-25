@@ -1,14 +1,19 @@
 /**
  * 生成合并后的音源文件
- * @version 1.5.0
+ * @version 1.6.0
  * @changelog
+ *   v1.6.0:
+ *     - [1] 新增按 (file, platform) 维度的评分注入（sanitizeHostScoresByFilePlatform）
+ *     - [2] 新增 __HOST_SCORES_BY_FILE_PLATFORM__ / __FORCE_KEEP_BY_FILE_PLATFORM__ / __FORCE_DROP_BY_FILE_PLATFORM__
+ *     - [3] 新增 __FILE_IDX_TO_NAME__、__CURRENT_FILE_IDX__ / __CURRENT_PLATFORM__ 上下文
+ *     - [4] __interceptRequest__ 按 (file, platform) 优先判定、全局回退；keep → drop 顺序不变
+ *     - [5] normalizeKeepDrop 兼容数组（旧）和对象（新）两种 keep/drop 结构
  *   v1.5.0:
  *     - [1] 评分公式改为 rate*0.9 + speed*0.06 + order*0.04
  *     - [2] 拦截条件改为 calls >= 5 && score < 0.15 && rate < 0.1
  *     - [3] 新增官方 API 白名单（后缀匹配）
  *     - [4] 新增用户勾选覆盖 __FORCE_KEEP__ / __FORCE_DROP__
  *     - [5] sanitizeHostScores 从 hostScores.global 提取运行时评分
- *     - [6] 取消时间衰减功能
  *   v1.4.0:
  *     - [1] 共享后端从"完全串行"改为"有界并发"（__MAX_CONCURRENT__=3）
  *     - [2] guard 超时 30s → 15s
@@ -231,7 +236,7 @@ function computeScores(report) {
 }
 
 /**
- * ⭐ v1.5.0：从 hostScores.global 提取运行时评分数据
+ * ⭐ v1.5.0：从 hostScores.global 提取运行时评分数据（全局回退用）
  *   - 兼容旧结构（直接传入扁平 host->score 的 hostScores）
  *   - 只保留数值字段，防止 JSON 注入
  */
@@ -259,6 +264,67 @@ function sanitizeHostScores(hostScores) {
 }
 
 /**
+ * ⭐ v1.6.0：从 hostScores.byFile[fileName].byPlatform[platform][host] 提取分维度评分
+ *   返回结构：{ fileName: { platform: { host: stats } } }
+ */
+function sanitizeHostScoresByFilePlatform(hostScores) {
+  const out = {}
+  if (!hostScores || typeof hostScores !== 'object') return out
+  const byFile = hostScores.byFile || {}
+  if (!byFile || typeof byFile !== 'object') return out
+
+  const NUMERIC_FIELDS = ['calls', 'ok', 'fail', 'blocked', 'httpError',
+                          'contributions', 'rate', 'avgMs', 'avgOrder', 'contributionRate']
+
+  for (const [fileName, fileData] of Object.entries(byFile)) {
+    if (!fileData || typeof fileData !== 'object') continue
+    const byPlatform = fileData.byPlatform || {}
+    for (const [platform, scope] of Object.entries(byPlatform)) {
+      if (!scope || typeof scope !== 'object') continue
+      for (const [host, v] of Object.entries(scope)) {
+        if (!v || typeof v !== 'object') continue
+        const cleaned = {}
+        for (const f of NUMERIC_FIELDS) {
+          if (typeof v[f] === 'number' && isFinite(v[f])) cleaned[f] = v[f]
+        }
+        if (Object.keys(cleaned).length === 0) continue
+        if (!out[fileName]) out[fileName] = {}
+        if (!out[fileName][platform]) out[fileName][platform] = {}
+        out[fileName][platform][host] = cleaned
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * ⭐ v1.6.0：归一化 keep/drop
+ *   兼容旧格式（数组：全局 host 列表）和新格式（对象：{ fileName: { platform: [host] } }）
+ */
+function normalizeKeepDrop(input) {
+  const EMPTY = { global: [], byFilePlatform: {} }
+  if (!input) return EMPTY
+  if (Array.isArray(input)) {
+    const cleaned = input.filter((h) => typeof h === 'string' && h)
+    return { global: cleaned, byFilePlatform: {} }
+  }
+  if (typeof input !== 'object') return EMPTY
+
+  const byFilePlatform = {}
+  for (const [file, platforms] of Object.entries(input)) {
+    if (!platforms || typeof platforms !== 'object') continue
+    for (const [platform, list] of Object.entries(platforms)) {
+      if (!Array.isArray(list) || list.length === 0) continue
+      const cleaned = list.filter((h) => typeof h === 'string' && h)
+      if (cleaned.length === 0) continue
+      if (!byFilePlatform[file]) byFilePlatform[file] = {}
+      byFilePlatform[file][platform] = cleaned
+    }
+  }
+  return { global: [], byFilePlatform }
+}
+
+/**
  * 生成合并后的音源文件
  *
  * @param {Array} files
@@ -269,16 +335,18 @@ function sanitizeHostScores(hostScores) {
  *     backendMode: 'blacklist' | 'score',
  *     blockedHosts: string[],
  *     hostScores: Object,
- *     shadowKeep: string[],
- *     shadowDrop: string[],
+ *     shadowKeep: string[] | Object,
+ *     shadowDrop: string[] | Object,
  *   }
  */
 function generateMergedCode(files, selection, report, options = {}) {
   const backendMode = options.backendMode === 'score' ? 'score' : 'blacklist'
   const rawBlockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
   const hostScores = options.hostScores && typeof options.hostScores === 'object' ? options.hostScores : {}
-  const shadowKeep = Array.isArray(options.shadowKeep) ? options.shadowKeep : []
-  const shadowDrop = Array.isArray(options.shadowDrop) ? options.shadowDrop : []
+
+  // ⭐ v1.6.0：keep / drop 归一化（不做剔除，保持运行时 keep → drop 顺序）
+  const keepNorm = normalizeKeepDrop(options.shadowKeep)
+  const dropNorm = normalizeKeepDrop(options.shadowDrop)
 
   // ⭐ blacklist 模式：走原有保护过滤
   // ⭐ score 模式：完全不使用 blockedHosts
@@ -288,6 +356,11 @@ function generateMergedCode(files, selection, report, options = {}) {
 
   const sanitizedScores = backendMode === 'score'
     ? sanitizeHostScores(hostScores)
+    : {}
+
+  // ⭐ v1.6.0：分维度评分数据
+  const sanitizedScoresByFilePlatform = backendMode === 'score'
+    ? sanitizeHostScoresByFilePlatform(hostScores)
     : {}
 
   const scores = computeScores(report)
@@ -304,6 +377,13 @@ function generateMergedCode(files, selection, report, options = {}) {
         priorityMap[p].push(fileIdx)
       }
     }
+  }
+
+  // ⭐ v1.6.0：fileIdx → fileName 映射（供运行时根据 fileIdx 反查文件名）
+  const fileIdxToName = {}
+  for (const idxStr of Object.keys(selection)) {
+    const idx = Number(idxStr)
+    if (files[idx] && files[idx].name) fileIdxToName[idx] = files[idx].name
   }
 
   // ⭐ v1.3.0：排序规则增加 tiebreaker（参数规范度、后端数量）
@@ -351,7 +431,7 @@ function generateMergedCode(files, selection, report, options = {}) {
 
   // 生成文件头注释，标注模式
   const modeLabel = backendMode === 'score'
-    ? '后端优化：影子评分'
+    ? '后端优化：影子评分（按平台）'
     : (blockedHosts.length > 0 ? '后端优化：黑名单' : '后端优化：无')
 
   const sharedInfo = sharedHosts.length > 0
@@ -378,7 +458,7 @@ ${files.map((f, i) => {
   const backendInfo = backendCount > 0 ? ` (后端: ${backendCount})` : ''
   return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}${backendInfo}`
 }).join('\n')}
- * @version 1.5.0
+ * @version 1.6.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -473,25 +553,39 @@ ${files.map((f, i) => {
 `
   }
 
-  // ⭐ 评分模式（v1.5.0）
+  // ⭐ 评分模式（v1.6.0）：按 (file, platform) 优先，回退全局；keep → drop 顺序完全不变
   if (backendMode === 'score' && Object.keys(sanitizedScores).length > 0) {
     const protectedSuffixesJson = JSON.stringify(RUNTIME_PROTECTED_SUFFIXES)
-    const keepJson = JSON.stringify(shadowKeep)
-    const dropJson = JSON.stringify(shadowDrop)
+    const keepGlobalJson = JSON.stringify(keepNorm.global)
+    const dropGlobalJson = JSON.stringify(dropNorm.global)
+    const keepByFilePlatformJson = JSON.stringify(keepNorm.byFilePlatform)
+    const dropByFilePlatformJson = JSON.stringify(dropNorm.byFilePlatform)
+    const scoresByFilePlatformJson = JSON.stringify(sanitizedScoresByFilePlatform)
+    const fileIdxToNameJson = JSON.stringify(fileIdxToName)
 
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【影子评分 v2】基于历史运行数据动态限制低质量后端
+  // 【影子评分 v3】按 (file, platform) 维度动态限制低质量后端
   //   - 公式：score = rate*0.9 + speedScore*0.06 + orderScore*0.04
   //   - 拦截条件：calls >= 5 && score < 0.15 && rate < 0.1
   //   - 官方 API 白名单：后缀匹配，永不拦截
-  //   - 用户勾选覆盖：__FORCE_KEEP__（保留）/ __FORCE_DROP__（拦截）
+  //   - 判定顺序（与旧版一致，keep 先于 drop，顺序未修改）：
+  //       protected
+  //         → (file,platform) keep → (file,platform) drop → (file,platform) 评分
+  //         → 全局 keep → 全局 drop → 全局评分
   // ═══════════════════════════════════════════════════════
   var __HOST_SCORES__ = ${JSON.stringify(sanitizedScores)}
-  var __scoreCache__ = {}
-  var __FORCE_KEEP__ = new Set(${keepJson})
-  var __FORCE_DROP__ = new Set(${dropJson})
+  var __HOST_SCORES_BY_FILE_PLATFORM__ = ${scoresByFilePlatformJson}
+  var __FILE_IDX_TO_NAME__ = ${fileIdxToNameJson}
+  var __FORCE_KEEP__ = new Set(${keepGlobalJson})
+  var __FORCE_DROP__ = new Set(${dropGlobalJson})
+  var __FORCE_KEEP_BY_FILE_PLATFORM__ = ${keepByFilePlatformJson}
+  var __FORCE_DROP_BY_FILE_PLATFORM__ = ${dropByFilePlatformJson}
   var __PROTECTED_SUFFIXES__ = ${protectedSuffixesJson}
+
+  // ⭐ v1.6.0：上下文变量，由分发层在调用 handler 前设置
+  var __CURRENT_FILE_IDX__ = -1
+  var __CURRENT_PLATFORM__ = null
 
   function __isProtectedHost__(host) {
     if (!host) return false
@@ -502,14 +596,12 @@ ${files.map((f, i) => {
     return false
   }
 
-  function __scoreHost__(host) {
-    if (__scoreCache__[host] !== undefined) return __scoreCache__[host]
-    var s = __HOST_SCORES__[host]
-    if (!s) return __scoreCache__[host] = 1.0
+  function __scoreHostStats__(s) {
+    if (!s) return 1.0
     var rateScore = (typeof s.rate === 'number') ? s.rate : 1.0
     var speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
     var orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
-    return __scoreCache__[host] = rateScore * 0.9 + speedScore * 0.06 + orderScore * 0.04
+    return rateScore * 0.9 + speedScore * 0.06 + orderScore * 0.04
   }
 
   function __makeBlockErr__(host) {
@@ -522,26 +614,46 @@ ${files.map((f, i) => {
     return err
   }
 
+  function __checkScoreBlock__(s, host) {
+    if (!s) return null
+    var calls = s.calls || 0
+    if (calls < 5) return null
+    var rate = (typeof s.rate === 'number') ? s.rate : 1.0
+    var score = __scoreHostStats__(s)
+    if (score < 0.15 && rate < 0.1) return __makeBlockErr__(host)
+    return null
+  }
+
   function __interceptRequest__(host) {
     if (!host) return null
 
-    // 1. 官方 API 白名单：永不拦截
+    // 0. 官方 API 白名单：永不拦截
     if (__isProtectedHost__(host)) return null
 
-    // 2. 用户手动覆盖
+    var fileIdx = __CURRENT_FILE_IDX__
+    var platform = __CURRENT_PLATFORM__
+    var fileName = (fileIdx >= 0 && __FILE_IDX_TO_NAME__[fileIdx]) ? __FILE_IDX_TO_NAME__[fileIdx] : null
+
+    // 1. 按 (file, platform) 判定，顺序保持 keep → drop（未修改）
+    if (fileName && platform) {
+      var fk = __FORCE_KEEP_BY_FILE_PLATFORM__[fileName]
+      if (fk && fk[platform] && fk[platform].indexOf(host) >= 0) return null
+
+      var fd = __FORCE_DROP_BY_FILE_PLATFORM__[fileName]
+      if (fd && fd[platform] && fd[platform].indexOf(host) >= 0) return __makeBlockErr__(host)
+
+      var fs = __HOST_SCORES_BY_FILE_PLATFORM__[fileName]
+      if (fs && fs[platform] && fs[platform][host]) {
+        return __checkScoreBlock__(fs[platform][host], host)
+      }
+    }
+
+    // 2. 回退到全局，顺序保持 keep → drop（未修改）
     if (__FORCE_KEEP__.has(host)) return null
     if (__FORCE_DROP__.has(host)) return __makeBlockErr__(host)
 
-    // 3. 自动评分拦截
-    var s = __HOST_SCORES__[host]
-    if (!s) return null
-
-    var calls = s.calls || 0
-    if (calls < 5) return null
-
-    var rate = (typeof s.rate === 'number') ? s.rate : 1.0
-    var score = __scoreHost__(host)
-    if (score < 0.15 && rate < 0.1) return __makeBlockErr__(host)
+    var gs = __HOST_SCORES__[host]
+    if (gs) return __checkScoreBlock__(gs, host)
 
     return null
   }
@@ -850,6 +962,11 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
         console.log('[分发] 源' + (fileIdx + 1) + ' 未注册，跳过')
         continue
       }
+
+      // ⭐ v1.6.0：设置当前上下文，供 __interceptRequest__ 按 (file, platform) 判定
+      __CURRENT_FILE_IDX__ = fileIdx
+      __CURRENT_PLATFORM__ = source
+
       try {
         const result = await Promise.race([
           h.handler(__innerParams__),
@@ -886,6 +1003,8 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
       const firstIdx = priorityList[0]
       const h0 = __handlers__.find(function (x) { return x.fileIdx === firstIdx })
       if (h0) {
+        __CURRENT_FILE_IDX__ = firstIdx
+        __CURRENT_PLATFORM__ = source
         const fallback = await h0.handler(__innerParams__)
         if (fallback) return fallback
       }
