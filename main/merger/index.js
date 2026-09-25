@@ -41,7 +41,11 @@ async function analyzeSources(files) {
 }
 
 /**
- * ⭐ v2.0：options 新增 backendMode、hostScores、shadowKeep、shadowDrop
+ * ⭐ v2.2：options 支持按 (file, platform) 的 shadowKeep / shadowDrop
+ *   - shadowKeep / shadowDrop 可为：
+ *     - 数组（旧格式，全局 host 列表）→ generator 会转成 global
+ *     - 对象（新格式，{ fileName: { platform: [host] } }）→ generator 保留分维度
+ *   - 本函数不做 Array.isArray 强转，原样透传给 generator
  *
  * @param {Array} files
  * @param {Object} selection
@@ -51,8 +55,8 @@ async function analyzeSources(files) {
  *     backendMode: 'blacklist' | 'score',
  *     blockedHosts: string[],
  *     hostScores: Object,
- *     shadowKeep: string[],
- *     shadowDrop: string[],
+ *     shadowKeep: string[] | Object,
+ *     shadowDrop: string[] | Object,
  *   }
  */
 function mergeSources(files, selection, report, options = {}) {
@@ -61,8 +65,9 @@ function mergeSources(files, selection, report, options = {}) {
   const hostScores = (options.hostScores && typeof options.hostScores === 'object')
     ? options.hostScores
     : {}
-  const shadowKeep = Array.isArray(options.shadowKeep) ? options.shadowKeep : []
-  const shadowDrop = Array.isArray(options.shadowDrop) ? options.shadowDrop : []
+  // ⭐ v2.2：不做 Array.isArray 强转，保留对象格式（数组格式由 generator 的 normalizeKeepDrop 兼容）
+  const shadowKeep = options.shadowKeep || []
+  const shadowDrop = options.shadowDrop || []
 
   const prunedFiles = files.map((file, idx) => {
     const keepPlatforms = selection[idx] || []
