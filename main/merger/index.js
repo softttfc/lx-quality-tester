@@ -41,18 +41,16 @@ async function analyzeSources(files) {
 }
 
 /**
- * ⭐ v2.2：options 支持按 (file, platform) 的 shadowKeep / shadowDrop
- *   - shadowKeep / shadowDrop 可为：
- *     - 数组（旧格式，全局 host 列表）→ generator 会转成 global
- *     - 对象（新格式，{ fileName: { platform: [host] } }）→ generator 保留分维度
- *   - 本函数不做 Array.isArray 强转，原样透传给 generator
+ * ⭐ v2.3：options 支持三态 backendMode: 'none' | 'blacklist' | 'score'
+ *   - shadowKeep / shadowDrop 兼容数组（旧）和对象（新）
+ *   - 原样透传给 generator，由 generator 内部处理兼容与降级
  *
  * @param {Array} files
  * @param {Object} selection
  * @param {Object|null} report
  * @param {Object} options
  *   {
- *     backendMode: 'blacklist' | 'score',
+ *     backendMode: 'none' | 'blacklist' | 'score',
  *     blockedHosts: string[],
  *     hostScores: Object,
  *     shadowKeep: string[] | Object,
@@ -61,11 +59,16 @@ async function analyzeSources(files) {
  */
 function mergeSources(files, selection, report, options = {}) {
   const blockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
-  const backendMode = options.backendMode === 'score' ? 'score' : 'blacklist'
+
+  // ⭐ v2.3：三态校验
+  let backendMode = options.backendMode
+  if (backendMode !== 'none' && backendMode !== 'blacklist' && backendMode !== 'score') {
+    backendMode = 'blacklist'
+  }
+
   const hostScores = (options.hostScores && typeof options.hostScores === 'object')
     ? options.hostScores
     : {}
-  // ⭐ v2.2：不做 Array.isArray 强转，保留对象格式（数组格式由 generator 的 normalizeKeepDrop 兼容）
   const shadowKeep = options.shadowKeep || []
   const shadowDrop = options.shadowDrop || []
 
