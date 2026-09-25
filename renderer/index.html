@@ -111,6 +111,11 @@
               覆盖全部 host（多轮强制 fallback，耗时更长）
             </label>
             <button id="btnRunShadowTest" class="secondary" style="margin-top:8px">▶️ 运行影子测试</button>
+            <div class="hint" style="font-size:11px;color:#888;margin-top:4px;line-height:1.5;background:#f9f9f9;padding:6px 8px;border-radius:4px">
+              建议测试歌曲 <b style="color:#007aff">≥ 8 首</b>（最低 5 首）。<br>
+              多轮覆盖模式下每首歌每个平台都会被反复调用，歌曲数越多每个 host 的样本量越充足，评分越可靠；<br>
+              歌曲数过少（如 1~2 首）会导致 <code>calls &lt; 5</code>，评分拦截条件失效。
+            </div>
             <div id="shadowStatus" class="search-status"></div>
             <div id="shadowSummary" class="shadow-summary" style="display:none"></div>
           </div>
