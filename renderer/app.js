@@ -1017,15 +1017,23 @@ function collectShadowSelection() {
 }
 
 /* ═════════ 合并策略 ═════════ */
+/* ⭐ v1.6.1：三态 backendMode = 'none' | 'blacklist' | 'score' */
 function getBackendMode() {
   const el = document.querySelector('input[name="backendMode"]:checked')
-  return el ? el.value : 'blacklist'
+  const v = el ? el.value : 'blacklist'
+  return (v === 'none' || v === 'blacklist' || v === 'score') ? v : 'blacklist'
 }
 
 function updateBackendModeStatus() {
   const mode = getBackendMode()
   const el = $('backendModeStatus')
   if (!el) return
+
+  if (mode === 'none') {
+    el.textContent = '🚫 无优化：不屏蔽任何后端，纯合并'
+    el.style.color = '#007aff'
+    return
+  }
 
   if (mode === 'blacklist') {
     if (backendResults && backendResults.length > 0) {
@@ -1036,7 +1044,7 @@ function updateBackendModeStatus() {
       el.textContent = `✓ 后端检测数据已就绪（${total} 个后端）`
       el.style.color = '#34c759'
     } else {
-      el.textContent = '⚠ 尚未运行后端检测，生成时将不屏蔽任何后端'
+      el.textContent = '⚠ 尚未运行后端检测，生成时将按「无优化」处理'
       el.style.color = '#ff9500'
     }
   } else {
@@ -1165,6 +1173,7 @@ $('btnGenerateMerge').addEventListener('click', async () => {
 
   const mode = getBackendMode()
 
+  // ⭐ v1.6.1：评分模式前置校验
   if (mode === 'score') {
     if (!hostScores) {
       return alert('评分模式需要先运行「影子测试」并获取到至少一个 host 的评分数据')
@@ -1216,9 +1225,15 @@ $('btnGenerateMerge').addEventListener('click', async () => {
   let shadowKeep = []
   let shadowDrop = []
 
-  if (mode === 'blacklist') {
+  // ⭐ v1.6.1：三态模式处理
+  if (mode === 'none') {
+    // 无优化：什么都不传，generator 内部会走无拦截器分支
+  } else if (mode === 'blacklist') {
     blockedHosts = collectBlockedHosts()
-    if (blockedHosts.length > 0) {
+    if (blockedHosts.length === 0) {
+      const ok = confirm('黑名单模式下没有要屏蔽的后端，将按「无优化」生成。继续？')
+      if (!ok) return
+    } else {
       const ok = confirm(
         `检测到 ${blockedHosts.length} 个后端将被屏蔽：\n` +
         blockedHosts.slice(0, 10).join('\n') +
@@ -1227,7 +1242,7 @@ $('btnGenerateMerge').addEventListener('click', async () => {
       )
       if (!ok) return
     }
-  } else {
+  } else if (mode === 'score') {
     // ⭐ v2.2：collectShadowSelection 返回 { keep: {fileName: {platform: []}}, drop: {...} }
     const shadow = collectShadowSelection()
     shadowKeep = shadow.keep
@@ -1235,9 +1250,14 @@ $('btnGenerateMerge').addEventListener('click', async () => {
   }
 
   $('btnGenerateMerge').disabled = true
-  $('mergeStatus').textContent = mode === 'score'
-    ? '正在生成（裁剪 + 排序 + 合并 + 按平台评分注入 + 共享后端检测）...'
-    : '正在生成（裁剪 + 排序 + 合并 + 黑名单 + 共享后端检测）...'
+
+  // ⭐ v1.6.1：三态文案
+  let modeText = '正在生成（裁剪 + 排序 + 合并'
+  if (mode === 'score') modeText += ' + 按平台评分注入'
+  else if (mode === 'blacklist') modeText += ' + 黑名单'
+  else modeText += ' + 无优化'
+  modeText += ' + 共享后端检测）...'
+  $('mergeStatus').textContent = modeText
   $('mergeStatus').style.color = '#007aff'
 
   try {
@@ -1497,6 +1517,24 @@ function escapeHtml(s) {
   tabs.forEach((t) => {
     t.addEventListener('click', () => activate(t.dataset.tab))
   })
+})()
+
+/* ⭐ v1.6.1：初始化时根据当前数据自动选择最合适的合并模式 */
+;(function autoSelectModeOnInit() {
+  const hasBackend = backendResults && backendResults.length > 0
+  const hasScore = hostScores && Object.keys(hostScores.global || hostScores).length > 0
+
+  const none = document.querySelector('input[name="backendMode"][value="none"]')
+  const black = document.querySelector('input[name="backendMode"][value="blacklist"]')
+  const score = document.querySelector('input[name="backendMode"][value="score"]')
+
+  if (hasScore) {
+    if (score) score.checked = true
+  } else if (hasBackend) {
+    if (black) black.checked = true
+  } else {
+    if (none) none.checked = true
+  }
 })()
 
 /* ═════════ 初始化：更新策略状态提示 ═════════ */
