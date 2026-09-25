@@ -984,15 +984,36 @@ function bindShadowPanelEvents() {
   })
 }
 
+/* ⭐ v2.2：按 (file, platform) 收集 keep / drop，保留平台维度 */
 function collectShadowSelection() {
-  const keep = new Set()
-  const drop = new Set()
+  // 中间结构：{ fileName: { platform: { keep: Set, drop: Set } } }
+  const state = {}
   document.querySelectorAll('.shadow-host-cb').forEach((cb) => {
+    const file = cb.dataset.file
+    const platform = cb.dataset.platform
     const host = cb.dataset.host
-    if (cb.checked) keep.add(host)
-    else drop.add(host)
+    if (!file || !platform || !host) return
+    if (!state[file]) state[file] = {}
+    if (!state[file][platform]) state[file][platform] = { keep: new Set(), drop: new Set() }
+    if (cb.checked) state[file][platform].keep.add(host)
+    else state[file][platform].drop.add(host)
   })
-  return { keep: [...keep], drop: [...drop] }
+
+  const keepByFilePlatform = {}
+  const dropByFilePlatform = {}
+  for (const [file, platforms] of Object.entries(state)) {
+    for (const [platform, s] of Object.entries(platforms)) {
+      if (s.keep.size > 0) {
+        if (!keepByFilePlatform[file]) keepByFilePlatform[file] = {}
+        keepByFilePlatform[file][platform] = [...s.keep]
+      }
+      if (s.drop.size > 0) {
+        if (!dropByFilePlatform[file]) dropByFilePlatform[file] = {}
+        dropByFilePlatform[file][platform] = [...s.drop]
+      }
+    }
+  }
+  return { keep: keepByFilePlatform, drop: dropByFilePlatform }
 }
 
 /* ═════════ 合并策略 ═════════ */
@@ -1207,6 +1228,7 @@ $('btnGenerateMerge').addEventListener('click', async () => {
       if (!ok) return
     }
   } else {
+    // ⭐ v2.2：collectShadowSelection 返回 { keep: {fileName: {platform: []}}, drop: {...} }
     const shadow = collectShadowSelection()
     shadowKeep = shadow.keep
     shadowDrop = shadow.drop
@@ -1214,7 +1236,7 @@ $('btnGenerateMerge').addEventListener('click', async () => {
 
   $('btnGenerateMerge').disabled = true
   $('mergeStatus').textContent = mode === 'score'
-    ? '正在生成（裁剪 + 排序 + 合并 + 评分注入 + 共享后端检测）...'
+    ? '正在生成（裁剪 + 排序 + 合并 + 按平台评分注入 + 共享后端检测）...'
     : '正在生成（裁剪 + 排序 + 合并 + 黑名单 + 共享后端检测）...'
   $('mergeStatus').style.color = '#007aff'
 
