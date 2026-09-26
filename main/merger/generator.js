@@ -1,26 +1,24 @@
 /**
  * 生成合并后的音源文件
- * @version 1.6.1
+ * @version 1.7.0
  * @changelog
+ *   v1.7.0:
+ *     - [1] P4：统一受保护域名配置（merger/protectedHosts.js），黑名单过滤与评分拦截共用
+ *     - [2] P5：移除 AST 删除（applyBackendBlacklist），只保留运行时拦截
+ *     - [3] P10：黑名单模式支持 (file, platform) 维度，保留全局回退
+ *     - [4] 黑名单/评分模式均注入 __isProtectedHost__ / __FILE_IDX_TO_NAME__ / __makeBlockErr__
  *   v1.6.1:
  *     - [1] 支持三态 backendMode: 'none' | 'blacklist' | 'score'
- *     - [2] __CURRENT_FILE_IDX__ / __CURRENT_PLATFORM__ 无条件声明，
- *           修复严格模式下赋值未声明变量导致的 ReferenceError
+ *     - [2] __CURRENT_FILE_IDX__ / __CURRENT_PLATFORM__ 无条件声明
  *     - [3] 黑名单模式 blockedHosts 为空时自动降级为 'none'
  *     - [4] modeLabel 支持三种模式
- *   v1.6.0:
- *     - [1] 新增按 (file, platform) 维度的评分注入
- *     - [2] 新增 __HOST_SCORES_BY_FILE_PLATFORM__ / __FORCE_KEEP_BY_FILE_PLATFORM__ / __FORCE_DROP_BY_FILE_PLATFORM__
- *     - [3] __interceptRequest__ 按 (file, platform) 优先判定、全局回退；keep → drop 顺序不变
- *     - [4] normalizeKeepDrop 兼容数组（旧）和对象（新）两种 keep/drop 结构
- *   v1.5.0:
- *     - [1] 评分公式改为 rate*0.9 + speed*0.06 + order*0.04
- *     - [2] 拦截条件改为 calls >= 5 && score < 0.15 && rate < 0.1
- *     - [3] 新增官方 API 白名单（后缀匹配）
- *     - [4] 新增用户勾选覆盖 __FORCE_KEEP__ / __FORCE_DROP__
  */
 
-const { applyBackendBlacklist } = require('./backendBlocker')
+const {
+  PROTECTED_SUFFIXES,
+  PROTECTED_REGEXPS,
+  isProtectedHost,
+} = require('./protectedHosts')
 
 const QUALITY_RANK = [
   'master', 'atmos_plus', 'atmos', 'hires',
@@ -30,36 +28,9 @@ const QUALITY_RANK = [
 const PER_SOURCE_TIMEOUT = 4000
 const MAX_CONCURRENT_PER_HOST = 3
 
-const RUNTIME_PROTECTED_SUFFIXES = [
-  'y.qq.com',
-  'qqmusic.qq.com',
-  'stream.qqmusic.qq.com',
-  'music.163.com',
-  'music.126.net',
-  'kugou.com',
-  'kuwo.cn',
-  'migu.cn',
-  'c.nf',
-  'gdstudio.xyz',
-  'lxmusic.xn--fiqs8s',
-]
-
-const PROTECTED_HOST_PATTERNS = [
-  /(^|\.)y\.qq\.com$/,
-  /(^|\.)music\.163\.com$/,
-  /(^|\.)kugou\.com$/,
-  /(^|\.)kuwo\.cn$/,
-  /(^|\.)migu\.cn$/,
-  /^music-api\.gdstudio\.xyz$/,
-  /(^|\.)m[^.]*\.music\.126\.net$/,
-  /^dl\.stream\.qqmusic\.qq\.com$/,
-  /(^|\.)kw-[^.]+\.kuwo\.cn$/,
-]
-
-function isProtectedHost(host) {
-  if (!host) return false
-  return PROTECTED_HOST_PATTERNS.some((re) => re.test(host))
-}
+// ═══════════════════════════════════════════════════════
+// 受保护域名过滤（Node 侧）
+// ═══════════════════════════════════════════════════════
 
 function filterProtectedHosts(hosts) {
   const input = Array.isArray(hosts) ? hosts : []
@@ -74,6 +45,26 @@ function filterProtectedHosts(hosts) {
   }
   return kept
 }
+
+function filterProtectedHostsByFilePlatform(input) {
+  const out = {}
+  if (!input || typeof input !== 'object') return out
+  for (const [file, platforms] of Object.entries(input)) {
+    if (!platforms || typeof platforms !== 'object') continue
+    for (const [platform, hosts] of Object.entries(platforms)) {
+      if (!Array.isArray(hosts) || hosts.length === 0) continue
+      const kept = hosts.filter((h) => typeof h === 'string' && h && !isProtectedHost(h))
+      if (kept.length === 0) continue
+      if (!out[file]) out[file] = {}
+      out[file][platform] = kept
+    }
+  }
+  return out
+}
+
+// ═══════════════════════════════════════════════════════
+// 工具
+// ═══════════════════════════════════════════════════════
 
 function extractHeader(content) {
   if (typeof content !== 'string') return ''
@@ -269,40 +260,39 @@ function normalizeKeepDrop(input) {
   return { global: [], byFilePlatform }
 }
 
-/**
- * 生成合并后的音源文件
- *
- * @param {Array} files
- * @param {Object} selection
- * @param {Object|null} report
- * @param {Object} options
- *   {
- *     backendMode: 'none' | 'blacklist' | 'score',
- *     blockedHosts: string[],
- *     hostScores: Object,
- *     shadowKeep: string[] | Object,
- *     shadowDrop: string[] | Object,
- *   }
- */
+// ═══════════════════════════════════════════════════════
+// 主入口
+// ═══════════════════════════════════════════════════════
+
 function generateMergedCode(files, selection, report, options = {}) {
-  // ⭐ v1.6.1：三态模式校验
   let backendMode = options.backendMode
   if (backendMode !== 'none' && backendMode !== 'blacklist' && backendMode !== 'score') {
     backendMode = 'blacklist'
   }
 
   const rawBlockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
+  const rawBlockedByFP = options.blockedHostsByFilePlatform && typeof options.blockedHostsByFilePlatform === 'object'
+    ? options.blockedHostsByFilePlatform
+    : {}
+
   const hostScores = options.hostScores && typeof options.hostScores === 'object' ? options.hostScores : {}
 
   const keepNorm = normalizeKeepDrop(options.shadowKeep)
   const dropNorm = normalizeKeepDrop(options.shadowDrop)
 
+  // P4：过滤受保护域名
   const blockedHosts = backendMode === 'blacklist'
     ? filterProtectedHosts(rawBlockedHosts)
     : []
+  const blockedHostsByFilePlatform = backendMode === 'blacklist'
+    ? filterProtectedHostsByFilePlatform(rawBlockedByFP)
+    : {}
 
-  // ⭐ v1.6.1：黑名单模式没有实际要屏蔽的 host 时，自动降级为无优化
-  const effectiveMode = (backendMode === 'blacklist' && blockedHosts.length === 0)
+  const hasGlobalBlocked = blockedHosts.length > 0
+  const hasFilePlatformBlocked = Object.keys(blockedHostsByFilePlatform).length > 0
+
+  // 黑名单模式下没有任何要屏蔽的 host → 降级为 none
+  const effectiveMode = (backendMode === 'blacklist' && !hasGlobalBlocked && !hasFilePlatformBlocked)
     ? 'none'
     : backendMode
 
@@ -376,12 +366,11 @@ function generateMergedCode(files, selection, report, options = {}) {
     }
   }
 
-  // ⭐ v1.6.1：三态 modeLabel
   let modeLabel
   if (effectiveMode === 'score') {
     modeLabel = '后端优化：影子评分（按平台）'
-  } else if (effectiveMode === 'blacklist' && blockedHosts.length > 0) {
-    modeLabel = '后端优化：黑名单'
+  } else if (effectiveMode === 'blacklist') {
+    modeLabel = '后端优化：黑名单（按文件+平台）'
   } else {
     modeLabel = '后端优化：无'
   }
@@ -410,7 +399,7 @@ ${files.map((f, i) => {
   const backendInfo = backendCount > 0 ? ` (后端: ${backendCount})` : ''
   return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}${backendInfo}`
 }).join('\n')}
- * @version 1.6.1
+ * @version 1.7.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -482,38 +471,105 @@ ${files.map((f, i) => {
   }
 `
 
-  // 黑名单模式拦截器（仅当有实际要屏蔽的 host 时注入）
-  if (effectiveMode === 'blacklist' && blockedHosts.length > 0) {
+  // ═══════════════════════════════════════════════════════
+  // 受保护域名 + 拦截器（黑名单 / 评分共用的部分）
+  // ═══════════════════════════════════════════════════════
+  if (effectiveMode !== 'none') {
+    const protectedSuffixesJson = JSON.stringify(PROTECTED_SUFFIXES)
+    const protectedRegexpsJson = JSON.stringify(PROTECTED_REGEXPS.map(r => r.source))
+    const fileIdxToNameJson = JSON.stringify(fileIdxToName)
+
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【后端黑名单】拦截器
+  // 【受保护域名】黑名单/评分共用
   // ═══════════════════════════════════════════════════════
-  var __BLOCKED_HOSTS__ = new Set(${JSON.stringify(blockedHosts)})
+  var __PROTECTED_SUFFIXES__ = ${protectedSuffixesJson}
+  var __PROTECTED_REGEXPS__ = ${protectedRegexpsJson}
+  var __FILE_IDX_TO_NAME__ = ${fileIdxToNameJson}
+
+  function __normalizeHost__(host) {
+    if (!host) return ''
+    var h = String(host).toLowerCase()
+    var idx = h.indexOf(':')
+    if (idx !== -1) h = h.slice(0, idx)
+    return h
+  }
+
+  function __isProtectedHost__(host) {
+    var h = __normalizeHost__(host)
+    if (!h) return false
+    for (var i = 0; i < __PROTECTED_SUFFIXES__.length; i++) {
+      var s = __PROTECTED_SUFFIXES__[i]
+      if (h === s || h.endsWith('.' + s)) return true
+    }
+    for (var j = 0; j < __PROTECTED_REGEXPS__.length; j++) {
+      if (new RegExp(__PROTECTED_REGEXPS__[j]).test(h)) return true
+    }
+    return false
+  }
+
+  function __makeBlockErr__(host, tag) {
+    var err = new Error('getaddrinfo ENOTFOUND ' + host)
+    err.code = 'ENOTFOUND'
+    err.errno = -3008
+    err.syscall = 'getaddrinfo'
+    err.hostname = host
+    err.blockedByMerger = true
+    if (tag) err.blockedByTag = tag
+    return err
+  }
+`
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 黑名单模式拦截器（P10：按 (file, platform) + 全局回退）
+  // ═══════════════════════════════════════════════════════
+  if (effectiveMode === 'blacklist') {
+    const blockedByFPJson = JSON.stringify(blockedHostsByFilePlatform)
+    const blockedGlobalJson = JSON.stringify(blockedHosts)
+
+    code += `
+  // ═══════════════════════════════════════════════════════
+  // 【后端黑名单 v2】按 (file, platform) + 全局回退
+  // ═══════════════════════════════════════════════════════
+  var __BLOCKED_HOSTS_BY_FILE_PLATFORM__ = ${blockedByFPJson}
+  var __BLOCKED_HOSTS__ = new Set(${blockedGlobalJson})
 
   function __interceptRequest__(host) {
-    if (host && __BLOCKED_HOSTS__.has(host)) {
-      var err = new Error('getaddrinfo ENOTFOUND ' + host)
-      err.code = 'ENOTFOUND'
-      err.errno = -3008
-      err.syscall = 'getaddrinfo'
-      err.hostname = host
-      err.blockedByMerger = true
-      return err
+    if (!host) return null
+    if (__isProtectedHost__(host)) return null
+
+    var fileIdx = __CURRENT_FILE_IDX__
+    var platform = __CURRENT_PLATFORM__
+    var fileName = (fileIdx >= 0 && __FILE_IDX_TO_NAME__[fileIdx])
+      ? __FILE_IDX_TO_NAME__[fileIdx]
+      : null
+
+    // 1. 按 (file, platform) 查
+    if (fileName && platform) {
+      var fb = __BLOCKED_HOSTS_BY_FILE_PLATFORM__[fileName]
+      if (fb && fb[platform] && fb[platform].indexOf(host) >= 0) {
+        return __makeBlockErr__(host, 'blacklist')
+      }
     }
+
+    // 2. 回退全局
+    if (__BLOCKED_HOSTS__.has(host)) return __makeBlockErr__(host, 'blacklist-global')
+
     return null
   }
 `
   }
 
+  // ═══════════════════════════════════════════════════════
   // 评分模式拦截器
+  // ═══════════════════════════════════════════════════════
   if (effectiveMode === 'score' && Object.keys(sanitizedScores).length > 0) {
-    const protectedSuffixesJson = JSON.stringify(RUNTIME_PROTECTED_SUFFIXES)
     const keepGlobalJson = JSON.stringify(keepNorm.global)
     const dropGlobalJson = JSON.stringify(dropNorm.global)
     const keepByFilePlatformJson = JSON.stringify(keepNorm.byFilePlatform)
     const dropByFilePlatformJson = JSON.stringify(dropNorm.byFilePlatform)
     const scoresByFilePlatformJson = JSON.stringify(sanitizedScoresByFilePlatform)
-    const fileIdxToNameJson = JSON.stringify(fileIdxToName)
 
     code += `
   // ═══════════════════════════════════════════════════════
@@ -521,28 +577,17 @@ ${files.map((f, i) => {
   //   - 公式：score = rate*0.9 + speedScore*0.06 + orderScore*0.04
   //   - 拦截条件：calls >= 5 && score < 0.15 && rate < 0.1
   //   - 官方 API 白名单：后缀匹配，永不拦截
-  //   - 判定顺序（与旧版一致，keep 先于 drop）：
+  //   - 判定顺序：
   //       protected
   //         → (file,platform) keep → (file,platform) drop → (file,platform) 评分
   //         → 全局 keep → 全局 drop → 全局评分
   // ═══════════════════════════════════════════════════════
   var __HOST_SCORES__ = ${JSON.stringify(sanitizedScores)}
   var __HOST_SCORES_BY_FILE_PLATFORM__ = ${scoresByFilePlatformJson}
-  var __FILE_IDX_TO_NAME__ = ${fileIdxToNameJson}
   var __FORCE_KEEP__ = new Set(${keepGlobalJson})
   var __FORCE_DROP__ = new Set(${dropGlobalJson})
   var __FORCE_KEEP_BY_FILE_PLATFORM__ = ${keepByFilePlatformJson}
   var __FORCE_DROP_BY_FILE_PLATFORM__ = ${dropByFilePlatformJson}
-  var __PROTECTED_SUFFIXES__ = ${protectedSuffixesJson}
-
-  function __isProtectedHost__(host) {
-    if (!host) return false
-    for (var i = 0; i < __PROTECTED_SUFFIXES__.length; i++) {
-      var s = __PROTECTED_SUFFIXES__[i]
-      if (host === s || host.endsWith('.' + s)) return true
-    }
-    return false
-  }
 
   function __scoreHostStats__(s) {
     if (!s) return 1.0
@@ -552,43 +597,35 @@ ${files.map((f, i) => {
     return rateScore * 0.9 + speedScore * 0.06 + orderScore * 0.04
   }
 
-  function __makeBlockErr__(host) {
-    var err = new Error('getaddrinfo ENOTFOUND ' + host)
-    err.code = 'ENOTFOUND'
-    err.errno = -3008
-    err.syscall = 'getaddrinfo'
-    err.hostname = host
-    err.blockedByScorer = true
-    return err
-  }
-
   function __checkScoreBlock__(s, host) {
     if (!s) return null
     var calls = s.calls || 0
     if (calls < 5) return null
     var rate = (typeof s.rate === 'number') ? s.rate : 1.0
     var score = __scoreHostStats__(s)
-    if (score < 0.15 && rate < 0.1) return __makeBlockErr__(host)
+    if (score < 0.15 && rate < 0.1) return __makeBlockErr__(host, 'score')
     return null
   }
 
   function __interceptRequest__(host) {
     if (!host) return null
-
-    // 0. 官方 API 白名单：永不拦截
     if (__isProtectedHost__(host)) return null
 
     var fileIdx = __CURRENT_FILE_IDX__
     var platform = __CURRENT_PLATFORM__
-    var fileName = (fileIdx >= 0 && __FILE_IDX_TO_NAME__[fileIdx]) ? __FILE_IDX_TO_NAME__[fileIdx] : null
+    var fileName = (fileIdx >= 0 && __FILE_IDX_TO_NAME__[fileIdx])
+      ? __FILE_IDX_TO_NAME__[fileIdx]
+      : null
 
-    // 1. 按 (file, platform) 判定，顺序保持 keep → drop
+    // 1. 按 (file, platform) 判定，keep → drop → score
     if (fileName && platform) {
       var fk = __FORCE_KEEP_BY_FILE_PLATFORM__[fileName]
       if (fk && fk[platform] && fk[platform].indexOf(host) >= 0) return null
 
       var fd = __FORCE_DROP_BY_FILE_PLATFORM__[fileName]
-      if (fd && fd[platform] && fd[platform].indexOf(host) >= 0) return __makeBlockErr__(host)
+      if (fd && fd[platform] && fd[platform].indexOf(host) >= 0) {
+        return __makeBlockErr__(host, 'shadow-drop')
+      }
 
       var fs = __HOST_SCORES_BY_FILE_PLATFORM__[fileName]
       if (fs && fs[platform] && fs[platform][host]) {
@@ -596,9 +633,9 @@ ${files.map((f, i) => {
       }
     }
 
-    // 2. 回退到全局，顺序保持 keep → drop
+    // 2. 回退全局，keep → drop → score
     if (__FORCE_KEEP__.has(host)) return null
-    if (__FORCE_DROP__.has(host)) return __makeBlockErr__(host)
+    if (__FORCE_DROP__.has(host)) return __makeBlockErr__(host, 'shadow-drop-global')
 
     var gs = __HOST_SCORES__[host]
     if (gs) return __checkScoreBlock__(gs, host)
@@ -608,21 +645,13 @@ ${files.map((f, i) => {
 `
   }
 
-  // ⭐ 统一 wrapper：上下文变量无条件声明（修复 ReferenceError）
+  // ═══════════════════════════════════════════════════════
+  // 上下文变量 + 统一 request wrapper
+  // ═══════════════════════════════════════════════════════
   code += `
-  // ═══════════════════════════════════════════════════════
-  // 【上下文变量】分发层在调用 handler 前会设置这两个变量，
-  // 供 __interceptRequest__ 按 (file, platform) 判定。
-  // ⭐ v1.6.1：无论哪种模式（none/blacklist/score）都必须声明，
-  // 否则严格模式下赋值未声明变量会抛 ReferenceError，
-  // 导致分发层整体 reject、所有源失败。
-  // ═══════════════════════════════════════════════════════
   var __CURRENT_FILE_IDX__ = -1
   var __CURRENT_PLATFORM__ = null
 
-  // ═══════════════════════════════════════════════════════
-  // 【统一 request wrapper】先拦截，再走有界并发队列
-  // ═══════════════════════════════════════════════════════
   function __makeRequestWrapper__(origRequest, lxRef) {
     if (origRequest.__hywWrapped__) return origRequest
 
@@ -634,7 +663,7 @@ ${files.map((f, i) => {
         host = m ? m[1].toLowerCase().replace(/:\\d+$/, '') : null
       } catch (e) {}
 
-      // 1. 拦截检查（黑名单 / 评分；none 模式下无拦截器）
+      // 1. 拦截检查
       if (typeof __interceptRequest__ === 'function') {
         var intErr = null
         try { intErr = __interceptRequest__(host) } catch (e) {}
@@ -644,7 +673,7 @@ ${files.map((f, i) => {
         }
       }
 
-      // 2. 有界并发队列（仅共享后端）
+      // 2. 有界并发队列
       return __enqueueByHost__(host, function () {
         return new Promise(function (resolve) {
           var done = false
@@ -689,24 +718,15 @@ ${files.map((f, i) => {
   const __handlers__ = []
 `
 
+  // ═══════════════════════════════════════════════════════
+  // P5：移除 AST 删除，直接注入原始代码
+  // ═══════════════════════════════════════════════════════
   for (let i = 0; i < files.length; i++) {
     const file = files[i]
     const platforms = selection[i] || []
     if (platforms.length === 0) continue
 
-    let content = file.content
-
-    // AST 黑名单删除（仅 blacklist 模式且非空时执行）
-    if (effectiveMode === 'blacklist' && blockedHosts.length > 0) {
-      const r = applyBackendBlacklist(content, blockedHosts)
-      if (!r.report.error) {
-        content = r.code
-        console.log(
-          `[backendBlocker] ${file.name}: AST 删 ${r.report.ast} 个, ` +
-          `跳过 ${r.report.skipped.length} 个, 漏 ${r.report.missed.length}`
-        )
-      }
-    }
+    const content = file.content
 
     const replaced = content
       .replace(/globalThis\s*\.\s*lx\b/g, '__lx_proxy__')
@@ -781,10 +801,10 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
 `
   }
 
+  // ═══════════════════════════════════════════════════════
+  // 质量探测 + 分发层
+  // ═══════════════════════════════════════════════════════
   code += `
-  // ═══════════════════════════════════════════════════════
-  // 质量探测工具
-  // ═══════════════════════════════════════════════════════
   var __QUALITY_RANK__ = ['master','atmos_plus','atmos','hires','flac','flac24bit','320k','192k','128k']
   function __qualityIndex__(q) {
     var i = __QUALITY_RANK__.indexOf(q)
@@ -921,7 +941,6 @@ ${replaced.split('\n').map((line) => '      ' + line).join('\n')}
         continue
       }
 
-      // ⭐ v1.6.1：设置当前上下文（变量已无条件声明，不再抛 ReferenceError）
       __CURRENT_FILE_IDX__ = fileIdx
       __CURRENT_PLATFORM__ = source
 
