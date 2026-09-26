@@ -969,3 +969,32 @@ textarea#shadowSongs:focus {
   font-weight: 600;
   color: #6633aa;
 }
+
+/* ⭐ v1.8.0：host 列表表头行 */
+.shadow-host-header {
+  display: grid;
+  grid-template-columns: 20px 16px 1fr 36px 36px 38px 44px 50px 36px 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 10px;
+  color: #999;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 2px;
+}
+.shadow-host-header .shadow-host-name {
+  text-align: left;
+  font-family: inherit;
+  color: #999;
+}
+.shadow-host-header .shadow-host-num {
+  text-align: right;
+  color: #999;
+  font-family: inherit;
+}
+.shadow-host-header .shadow-host-score {
+  text-align: right;
+  color: #999;
+  font-weight: normal;
+  font-family: inherit;
+}
