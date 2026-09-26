@@ -777,10 +777,12 @@ textarea#shadowSongs:focus {
   padding-bottom: 4px;
   border-bottom: 1px solid #eee;
 }
+
+/* ⭐ v1.7.0 P2：新增贡献/贡献率两列 */
 .shadow-score-header,
 .shadow-score-row {
   display: grid;
-  grid-template-columns: 18px 1fr 36px 34px 44px 30px 34px;
+  grid-template-columns: 18px 1fr 34px 34px 36px 44px 44px 34px 34px;
   gap: 4px;
   align-items: center;
   padding: 2px 0;
@@ -929,9 +931,11 @@ textarea#shadowSongs:focus {
   flex-direction: column;
   gap: 2px;
 }
+
+/* ⭐ v1.7.0 P2：新增贡献/贡献率两列 */
 .shadow-host-row {
   display: grid;
-  grid-template-columns: 20px 16px 1fr 40px 44px 54px 40px 40px;
+  grid-template-columns: 20px 16px 1fr 36px 36px 38px 44px 50px 36px 36px;
   align-items: center;
   gap: 6px;
   padding: 3px 6px;
