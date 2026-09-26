@@ -563,7 +563,16 @@ function updateBackendSummary() {
   const blocked = all.filter((cb) => !cb.checked)
   if (backendResults) renderBackendSummary(backendResults)
 
-  const blockedSet = new Set(blocked.map((cb) => cb.dataset.host))
+  // ⭐ v1.7.0 P10：按 (file, platform) 统计屏蔽数
+  let totalBlocked = 0
+  const seen = new Set()
+  for (const cb of blocked) {
+    const key = `${cb.dataset.file}::${cb.dataset.platform}::${cb.dataset.host}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    totalBlocked++
+  }
+
   let el = document.getElementById('blockedHostsSummary')
   if (!el) {
     el = document.createElement('div')
@@ -571,10 +580,9 @@ function updateBackendSummary() {
     el.className = 'blocked-hosts-summary'
     $('backendSummary').appendChild(el)
   }
-  if (blockedSet.size > 0) {
+  if (totalBlocked > 0) {
     el.style.display = 'block'
-    el.innerHTML = `⚠️ 已屏蔽 ${blockedSet.size} 个域名：
-      <div class="blocked-hosts-list">${[...blockedSet].map((h) => `<code>${escapeHtml(h)}</code>`).join('')}</div>`
+    el.innerHTML = `⚠️ 已屏蔽 ${totalBlocked} 条 (文件+平台+域名) 规则，生成时按 (文件, 平台) 维度生效`
   } else {
     el.style.display = 'none'
     el.innerHTML = ''
@@ -585,12 +593,24 @@ function cssEscape(s) {
   return String(s).replace(/["\\]/g, '\\$&')
 }
 
-function collectBlockedHosts() {
-  const blocked = new Set()
+/* ⭐ v1.7.0 P10：按 (file, platform) 收集黑名单
+ *   返回 { [file]: { [platform]: [hosts] } }
+ *   全局 blockedHosts 不再从 UI 收集，默认空 */
+function collectBlockedHostsByFilePlatform() {
+  const result = {}
   document.querySelectorAll('.backend-host-cb').forEach((cb) => {
-    if (!cb.checked) blocked.add(cb.dataset.host)
+    if (cb.checked) return
+    const file = cb.dataset.file
+    const platform = cb.dataset.platform
+    const host = cb.dataset.host
+    if (!file || !platform || !host) return
+    if (!result[file]) result[file] = {}
+    if (!result[file][platform]) result[file][platform] = []
+    if (!result[file][platform].includes(host)) {
+      result[file][platform].push(host)
+    }
   })
-  return [...blocked]
+  return result
 }
 
 /* ═════════ v2.0：影子测试 ═════════ */
@@ -646,14 +666,23 @@ $('btnRunShadowTest').addEventListener('click', async () => {
   $('shadowSummary').style.display = 'none'
 
   shadowUnsubscribe = window.api.onShadowProgress((p) => {
-    if (p.type === 'shadow-round-start') {
+    if (p.type === 'shadow-preload-start') {
+      $('shadowStatus').textContent = `预加载音源声明（共 ${p.total} 个文件）...`
+      $('shadowStatus').style.color = '#6633aa'
+    } else if (p.type === 'shadow-preload') {
+      $('shadowStatus').textContent = `预加载 declaredSources: ${p.file}`
+      $('shadowStatus').style.color = '#6633aa'
+    } else if (p.type === 'shadow-preload-done') {
+      $('shadowStatus').textContent = '预加载完成，开始影子测试...'
+      $('shadowStatus').style.color = '#6633aa'
+    } else if (p.type === 'shadow-round-start') {
       $('shadowStatus').textContent =
-        `第 ${p.round}/${p.maxRounds} 轮开始（已屏蔽 ${p.blockedCount} 个 host）`
+        `第 ${p.round}/${p.maxRounds} 轮开始（已屏蔽 ${p.blockedCount} 个 host 规则）`
       $('shadowStatus').style.color = '#6633aa'
     } else if (p.type === 'shadow-round-done') {
       $('shadowStatus').textContent =
-        `第 ${p.round} 轮完成：新增成功 ${p.newlySucceeded.length} 个 host，` +
-        `累计成功 ${p.totalSuccess} 个，累计屏蔽 ${p.totalBlocked} 个`
+        `第 ${p.round} 轮完成：新增成功 ${p.newlySucceeded.length} 项，` +
+        `累计成功 ${p.totalSuccess} 项，累计屏蔽规则 ${p.totalBlocked} 项`
       $('shadowStatus').style.color = '#34c759'
     } else if (p.type === 'shadow-run') {
       $('shadowStatus').textContent =
@@ -749,7 +778,7 @@ $('btnRunShadowTest').addEventListener('click', async () => {
   }
 })
 
-/* ⭐ v1.5.0：新评分公式 rate*0.9 + speed*0.06 + order*0.04 */
+/* ⭐ v1.7.0：评分公式（暂不改，与运行时一致） */
 function computeScore(s) {
   if (!s || typeof s !== 'object') return 0
   const rate = typeof s.rate === 'number' ? s.rate : 0
@@ -758,11 +787,14 @@ function computeScore(s) {
   return rate * 0.9 + speedScore * 0.06 + orderScore * 0.04
 }
 
-/* ⭐ v1.5.0：默认勾选规则（与运行时拦截一致） */
+/* ⭐ v1.7.0 P1：默认勾选规则与运行时 __checkScoreBlock__ 完全一致
+ *   运行时拦截条件：calls >= 5 && score < 0.15 && rate < 0.1
+ *   即满足该条件才默认不勾选 */
 function shouldKeepByScore(s) {
   if ((s.calls || 0) < 5) return true
-  if ((s.rate || 0) >= 0.1) return true
-  return false
+  const rate = typeof s.rate === 'number' ? s.rate : 0
+  const score = computeScore(s)
+  return !(score < 0.15 && rate < 0.1)
 }
 
 function renderShadowScorePanel(hostScores) {
@@ -782,12 +814,16 @@ function renderShadowScorePanel(hostScores) {
     const score = computeScore(s)
     const icon = score >= 0.8 ? '🟢' : score >= 0.5 ? '🟡' : '🔴'
     const rate = ((s.rate || 0) * 100).toFixed(0)
+    const contrib = s.contributions || 0
+    const contribRate = ((s.contributionRate || 0) * 100).toFixed(0)
     return `
       <div class="shadow-score-row" title="${escapeHtml(host)}">
         <span class="shadow-score-icon">${icon}</span>
         <span class="shadow-score-host">${escapeHtml(host)}</span>
         <span class="shadow-score-num">${s.calls || 0}</span>
         <span class="shadow-score-num">${rate}%</span>
+        <span class="shadow-score-num">${contrib}</span>
+        <span class="shadow-score-num">${contribRate}%</span>
         <span class="shadow-score-num">${s.avgMs || 0}ms</span>
         <span class="shadow-score-num">#${s.avgOrder || 0}</span>
         <span class="shadow-score-score">${(score * 100).toFixed(0)}</span>
@@ -810,6 +846,8 @@ function renderShadowScorePanel(hostScores) {
       <span class="shadow-score-host">域名</span>
       <span class="shadow-score-num">调用</span>
       <span class="shadow-score-num">成功</span>
+      <span class="shadow-score-num">贡献</span>
+      <span class="shadow-score-num">贡献率</span>
       <span class="shadow-score-num">耗时</span>
       <span class="shadow-score-num">顺序</span>
       <span class="shadow-score-score">评分</span>
@@ -908,7 +946,6 @@ function renderShadowPanelsStandalone(hostScores) {
 }
 
 function renderShadowPlatform(file, platform, hosts) {
-  // ⭐ 修复：用 Object.entries 保留 host（key 就是域名）
   const entries = Object.entries(hosts || {}).map(([host, data]) => ({ host, ...data }))
   if (entries.length === 0) return ''
 
@@ -919,6 +956,8 @@ function renderShadowPlatform(file, platform, hosts) {
     const keep = shouldKeepByScore(h)
     const icon = score >= 0.8 ? '🟢' : score >= 0.5 ? '🟡' : '🔴'
     const ratePct = ((h.rate || 0) * 100).toFixed(0)
+    const contrib = h.contributions || 0
+    const contribRate = ((h.contributionRate || 0) * 100).toFixed(0)
 
     return `
       <label class="shadow-host-row">
@@ -931,6 +970,8 @@ function renderShadowPlatform(file, platform, hosts) {
         <span class="shadow-host-name">${escapeHtml(h.host)}</span>
         <span class="shadow-host-num">${h.calls || 0}</span>
         <span class="shadow-host-num">${ratePct}%</span>
+        <span class="shadow-host-num">${contrib}</span>
+        <span class="shadow-host-num">${contribRate}%</span>
         <span class="shadow-host-num">${h.avgMs || 0}ms</span>
         <span class="shadow-host-num">#${h.avgOrder || 0}</span>
         <span class="shadow-host-score">${(score * 100).toFixed(0)}</span>
@@ -986,7 +1027,6 @@ function bindShadowPanelEvents() {
 
 /* ⭐ v2.2：按 (file, platform) 收集 keep / drop，保留平台维度 */
 function collectShadowSelection() {
-  // 中间结构：{ fileName: { platform: { keep: Set, drop: Set } } }
   const state = {}
   document.querySelectorAll('.shadow-host-cb').forEach((cb) => {
     const file = cb.dataset.file
@@ -1017,7 +1057,6 @@ function collectShadowSelection() {
 }
 
 /* ═════════ 合并策略 ═════════ */
-/* ⭐ v1.6.1：三态 backendMode = 'none' | 'blacklist' | 'score' */
 function getBackendMode() {
   const el = document.querySelector('input[name="backendMode"]:checked')
   const v = el ? el.value : 'blacklist'
@@ -1041,7 +1080,7 @@ function updateBackendModeStatus() {
       for (const r of backendResults) {
         for (const hosts of Object.values(r.platforms || {})) total += hosts.length
       }
-      el.textContent = `✓ 后端检测数据已就绪（${total} 个后端）`
+      el.textContent = `✓ 后端检测数据已就绪（${total} 个后端，按文件+平台生效）`
       el.style.color = '#34c759'
     } else {
       el.textContent = '⚠ 尚未运行后端检测，生成时将按「无优化」处理'
@@ -1222,28 +1261,46 @@ $('btnGenerateMerge').addEventListener('click', async () => {
   }
 
   let blockedHosts = []
+  let blockedHostsByFilePlatform = {}
   let shadowKeep = []
   let shadowDrop = []
 
-  // ⭐ v1.6.1：三态模式处理
+  // ⭐ v1.7.0 P10：三态模式处理
   if (mode === 'none') {
-    // 无优化：什么都不传，generator 内部会走无拦截器分支
+    // 无优化
   } else if (mode === 'blacklist') {
-    blockedHosts = collectBlockedHosts()
-    if (blockedHosts.length === 0) {
+    blockedHostsByFilePlatform = collectBlockedHostsByFilePlatform()
+
+    let totalBlocked = 0
+    for (const platforms of Object.values(blockedHostsByFilePlatform)) {
+      for (const hosts of Object.values(platforms)) {
+        totalBlocked += hosts.length
+      }
+    }
+
+    if (totalBlocked === 0) {
       const ok = confirm('黑名单模式下没有要屏蔽的后端，将按「无优化」生成。继续？')
       if (!ok) return
     } else {
+      const samples = []
+      outer:
+      for (const [file, platforms] of Object.entries(blockedHostsByFilePlatform)) {
+        for (const [platform, hosts] of Object.entries(platforms)) {
+          for (const host of hosts) {
+            samples.push(`${file} / ${platform} / ${host}`)
+            if (samples.length >= 10) break outer
+          }
+        }
+      }
       const ok = confirm(
-        `检测到 ${blockedHosts.length} 个后端将被屏蔽：\n` +
-        blockedHosts.slice(0, 10).join('\n') +
-        (blockedHosts.length > 10 ? '\n...' : '') +
+        `检测到 ${totalBlocked} 条后端屏蔽规则（按文件+平台生效）：\n` +
+        samples.join('\n') +
+        (totalBlocked > 10 ? '\n...' : '') +
         `\n\n继续生成？`
       )
       if (!ok) return
     }
   } else if (mode === 'score') {
-    // ⭐ v2.2：collectShadowSelection 返回 { keep: {fileName: {platform: []}}, drop: {...} }
     const shadow = collectShadowSelection()
     shadowKeep = shadow.keep
     shadowDrop = shadow.drop
@@ -1251,10 +1308,9 @@ $('btnGenerateMerge').addEventListener('click', async () => {
 
   $('btnGenerateMerge').disabled = true
 
-  // ⭐ v1.6.1：三态文案
   let modeText = '正在生成（裁剪 + 排序 + 合并'
   if (mode === 'score') modeText += ' + 按平台评分注入'
-  else if (mode === 'blacklist') modeText += ' + 黑名单'
+  else if (mode === 'blacklist') modeText += ' + 黑名单（按文件+平台）'
   else modeText += ' + 无优化'
   modeText += ' + 共享后端检测）...'
   $('mergeStatus').textContent = modeText
@@ -1267,6 +1323,7 @@ $('btnGenerateMerge').addEventListener('click', async () => {
       report: lastReport,
       backendMode: mode,
       blockedHosts,
+      blockedHostsByFilePlatform,
       hostScores,
       shadowKeep,
       shadowDrop,
