@@ -161,12 +161,13 @@ ipcMain.handle('run-shadow-test', async (event, { files, songs, options }) => {
   }
 })
 
-// ⭐ v2.0：merge-sources 接受 backendMode、hostScores、shadowKeep、shadowDrop
+// ⭐ v2.4：merge-sources 接受 blockedHostsByFilePlatform
 ipcMain.handle('merge-sources', async (event, {
   files,
   selection,
   report,
   blockedHosts,
+  blockedHostsByFilePlatform,
   backendMode,
   hostScores,
   shadowKeep,
@@ -176,6 +177,7 @@ ipcMain.handle('merge-sources', async (event, {
     const code = mergeSources(files, selection, report, {
       backendMode: backendMode === 'score' ? 'score' : 'blacklist',
       blockedHosts: blockedHosts || [],
+      blockedHostsByFilePlatform: blockedHostsByFilePlatform || {},
       hostScores: hostScores || {},
       shadowKeep: shadowKeep || [],
       shadowDrop: shadowDrop || [],
