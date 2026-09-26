@@ -993,6 +993,7 @@ function renderShadowPlatform(file, platform, hosts) {
       </label>`
   }).join('')
 
+  // ⭐ v1.8.0：新增 host 列表表头行
   return `
     <div class="shadow-platform">
       <div class="shadow-platform-header">
@@ -1003,7 +1004,21 @@ function renderShadowPlatform(file, platform, hosts) {
           <a href="javascript:void(0)" data-shadow-action="none" data-file="${escapeHtml(file)}" data-platform="${escapeHtml(platform)}">全不选</a>
         </span>
       </div>
-      <div class="shadow-host-list">${rows}</div>
+      <div class="shadow-host-list">
+        <div class="shadow-host-header">
+          <span></span>
+          <span></span>
+          <span class="shadow-host-name">域名</span>
+          <span class="shadow-host-num">调用</span>
+          <span class="shadow-host-num">成功</span>
+          <span class="shadow-host-num">贡献</span>
+          <span class="shadow-host-num">贡献率</span>
+          <span class="shadow-host-num">耗时</span>
+          <span class="shadow-host-num">顺序</span>
+          <span class="shadow-host-score">评分</span>
+        </div>
+        ${rows}
+      </div>
     </div>`
 }
 
