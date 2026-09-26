@@ -138,7 +138,7 @@ $('btnSave').addEventListener('click', async () => {
   const data = {
     ...lastReport,
     tool: 'lx-quality-tester',
-    version: '1.7.0',
+    version: '1.8.0',
     exportedAt: new Date().toISOString(),
   }
   const r = await window.api.saveReport(JSON.stringify(data, null, 2))
@@ -778,23 +778,38 @@ $('btnRunShadowTest').addEventListener('click', async () => {
   }
 })
 
-/* ⭐ v1.7.0：评分公式（暂不改，与运行时一致） */
+/* ⭐ v1.8.0：新评分公式
+ *   score = rate*0.45 + smoothedContrib*0.35 + speed*0.12 + order*0.08
+ *   smoothedContrib = (contributions + 1) / (calls + 10)
+ *   引入贡献率，区分"能连通"和"有产出"；速度/顺序权重提高到 0.2 */
 function computeScore(s) {
   if (!s || typeof s !== 'object') return 0
   const rate = typeof s.rate === 'number' ? s.rate : 0
+  const calls = s.calls || 0
+  const contributions = s.contributions || 0
+  const smoothedContrib = (contributions + 1) / (calls + 10)
   const speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
   const orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
-  return rate * 0.9 + speedScore * 0.06 + orderScore * 0.04
+  return rate * 0.45 + smoothedContrib * 0.35 + speedScore * 0.12 + orderScore * 0.08
 }
 
-/* ⭐ v1.7.0 P1：默认勾选规则与运行时 __checkScoreBlock__ 完全一致
- *   运行时拦截条件：calls >= 5 && score < 0.15 && rate < 0.1
- *   即满足该条件才默认不勾选 */
+/* ⭐ v1.8.0：默认勾选规则与运行时 __checkScoreBlock__ 完全一致
+ *   拦截条件 A：calls >= 5 && score < 0.20 && rate < 0.15
+ *   拦截条件 B：calls >= 10 && contributions === 0 && rate < 0.30
+ *   满足任一条件 → 默认不勾选 */
 function shouldKeepByScore(s) {
-  if ((s.calls || 0) < 5) return true
+  const calls = s.calls || 0
+  if (calls < 5) return true
   const rate = typeof s.rate === 'number' ? s.rate : 0
+  const contributions = s.contributions || 0
   const score = computeScore(s)
-  return !(score < 0.15 && rate < 0.1)
+
+  // 条件 A：低分 + 低成功率
+  if (score < 0.20 && rate < 0.15) return false
+  // 条件 B：有调用但从不产出 URL
+  if (calls >= 10 && contributions === 0 && rate < 0.30) return false
+
+  return true
 }
 
 function renderShadowScorePanel(hostScores) {
@@ -812,7 +827,7 @@ function renderShadowScorePanel(hostScores) {
   const shown = entries.slice(0, 50)
   const rows = shown.map(([host, s]) => {
     const score = computeScore(s)
-    const icon = score >= 0.8 ? '🟢' : score >= 0.5 ? '🟡' : '🔴'
+    const icon = score >= 0.5 ? '🟢' : score >= 0.3 ? '🟡' : '🔴'
     const rate = ((s.rate || 0) * 100).toFixed(0)
     const contrib = s.contributions || 0
     const contribRate = ((s.contributionRate || 0) * 100).toFixed(0)
@@ -954,7 +969,7 @@ function renderShadowPlatform(file, platform, hosts) {
   const rows = entries.map((h) => {
     const score = computeScore(h)
     const keep = shouldKeepByScore(h)
-    const icon = score >= 0.8 ? '🟢' : score >= 0.5 ? '🟡' : '🔴'
+    const icon = score >= 0.5 ? '🟢' : score >= 0.3 ? '🟡' : '🔴'
     const ratePct = ((h.rate || 0) * 100).toFixed(0)
     const contrib = h.contributions || 0
     const contribRate = ((h.contributionRate || 0) * 100).toFixed(0)
