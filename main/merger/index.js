@@ -41,26 +41,22 @@ async function analyzeSources(files) {
 }
 
 /**
- * ⭐ v2.3：options 支持三态 backendMode: 'none' | 'blacklist' | 'score'
+ * v2.4：options 支持三态 backendMode: 'none' | 'blacklist' | 'score'
+ *   - blockedHosts: 全局黑名单（兼容旧调用）
+ *   - blockedHostsByFilePlatform: { [file]: { [platform]: [hosts] } } 新增
  *   - shadowKeep / shadowDrop 兼容数组（旧）和对象（新）
- *   - 原样透传给 generator，由 generator 内部处理兼容与降级
  *
  * @param {Array} files
  * @param {Object} selection
  * @param {Object|null} report
  * @param {Object} options
- *   {
- *     backendMode: 'none' | 'blacklist' | 'score',
- *     blockedHosts: string[],
- *     hostScores: Object,
- *     shadowKeep: string[] | Object,
- *     shadowDrop: string[] | Object,
- *   }
  */
 function mergeSources(files, selection, report, options = {}) {
   const blockedHosts = Array.isArray(options.blockedHosts) ? options.blockedHosts : []
+  const blockedHostsByFilePlatform = (options.blockedHostsByFilePlatform && typeof options.blockedHostsByFilePlatform === 'object')
+    ? options.blockedHostsByFilePlatform
+    : {}
 
-  // ⭐ v2.3：三态校验
   let backendMode = options.backendMode
   if (backendMode !== 'none' && backendMode !== 'blacklist' && backendMode !== 'score') {
     backendMode = 'blacklist'
@@ -89,6 +85,7 @@ function mergeSources(files, selection, report, options = {}) {
   return generateMergedCode(prunedFiles, selection, report, {
     backendMode,
     blockedHosts,
+    blockedHostsByFilePlatform,
     hostScores,
     shadowKeep,
     shadowDrop,
