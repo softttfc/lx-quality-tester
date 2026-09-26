@@ -1,7 +1,13 @@
 /**
  * 生成合并后的音源文件
- * @version 1.7.0
+ * @version 1.8.0
  * @changelog
+ *   v1.8.0:
+ *     - [1] 评分公式改为 rate*0.45 + smoothedContrib*0.35 + speed*0.12 + order*0.08
+ *     - [2] 引入平滑贡献率 smoothedContrib = (contributions + 1) / (calls + 10)
+ *     - [3] 拦截条件改为：score < 0.20 && rate < 0.15（条件 A）
+ *                        或 contributions === 0 && rate < 0.30（条件 B）
+ *     - [4] UI 默认勾选规则同步更新，与运行时一致
  *   v1.7.0:
  *     - [1] P4：统一受保护域名配置（merger/protectedHosts.js），黑名单过滤与评分拦截共用
  *     - [2] P5：移除 AST 删除（applyBackendBlacklist），只保留运行时拦截
@@ -399,7 +405,7 @@ ${files.map((f, i) => {
   const backendInfo = backendCount > 0 ? ` (后端: ${backendCount})` : ''
   return ` *   [${i + 1}] ${f.name}${pStr}${pruneInfo}${scoreInfo}${backendInfo}`
 }).join('\n')}
- * @version 1.7.0
+ * @version 1.8.0
  * @generated ${new Date().toISOString()}
  */
 
@@ -573,9 +579,11 @@ ${files.map((f, i) => {
 
     code += `
   // ═══════════════════════════════════════════════════════
-  // 【影子评分 v3】按 (file, platform) 维度动态限制低质量后端
-  //   - 公式：score = rate*0.9 + speedScore*0.06 + orderScore*0.04
-  //   - 拦截条件：calls >= 5 && score < 0.15 && rate < 0.1
+  // 【影子评分 v4】按 (file, platform) 维度动态限制低质量后端
+  //   - 公式：score = rate*0.45 + smoothedContrib*0.35 + speedScore*0.12 + orderScore*0.04
+  //          smoothedContrib = (contributions + 1) / (calls + 10)
+  //   - 拦截条件 A：calls >= 5 && score < 0.20 && rate < 0.15
+  //   - 拦截条件 B：calls >= 10 && contributions === 0 && rate < 0.30
   //   - 官方 API 白名单：后缀匹配，永不拦截
   //   - 判定顺序：
   //       protected
@@ -592,9 +600,12 @@ ${files.map((f, i) => {
   function __scoreHostStats__(s) {
     if (!s) return 1.0
     var rateScore = (typeof s.rate === 'number') ? s.rate : 1.0
+    var calls = s.calls || 0
+    var contributions = s.contributions || 0
+    var smoothedContrib = (contributions + 1) / (calls + 10)
     var speedScore = Math.max(0, 1 - (s.avgMs || 0) / 5000)
     var orderScore = Math.max(0, 1 - (s.avgOrder || 0) / 10)
-    return rateScore * 0.9 + speedScore * 0.06 + orderScore * 0.04
+    return rateScore * 0.45 + smoothedContrib * 0.35 + speedScore * 0.12 + orderScore * 0.08
   }
 
   function __checkScoreBlock__(s, host) {
@@ -602,8 +613,14 @@ ${files.map((f, i) => {
     var calls = s.calls || 0
     if (calls < 5) return null
     var rate = (typeof s.rate === 'number') ? s.rate : 1.0
+    var contributions = s.contributions || 0
     var score = __scoreHostStats__(s)
-    if (score < 0.15 && rate < 0.1) return __makeBlockErr__(host, 'score')
+
+    // 条件 A：低分 + 低成功率
+    if (score < 0.20 && rate < 0.15) return __makeBlockErr__(host, 'score-low')
+    // 条件 B：有调用但从不产出 URL
+    if (calls >= 10 && contributions === 0 && rate < 0.30) return __makeBlockErr__(host, 'score-zero-contrib')
+
     return null
   }
 
