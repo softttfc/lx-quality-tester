@@ -509,24 +509,12 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
 /**
  * ⭐ v2.2：
  *   - 每 10 个文件检查内存，超过 85% 主动 GC 并告警
- *   - 进度事件节流 200ms，避免 IPC 队列堆积
+ *   ⚠ 已移除进度事件节流（之前误伤了 file-progress，导致进度条永远 0%）
  */
 async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
   const results = []
   const opts = options || {}
   const MEM_WARN_RATIO = 0.85
-  const PROGRESS_THROTTLE_MS = 200
-
-  let lastEmitAt = 0
-  const emit = (p) => {
-    if (!p || !p.type) return
-    const now = Date.now()
-    if (p.type === 'file-progress' || p.type === 'quality-start') {
-      if (now - lastEmitAt < PROGRESS_THROTTLE_MS) return
-      lastEmitAt = now
-    }
-    onProgress(p)
-  }
 
   for (let i = 0; i < files.length; i++) {
     // ⭐ 每 10 个文件检查内存
@@ -535,7 +523,7 @@ async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
         const mu = process.memoryUsage()
         const ratio = mu.heapUsed / Math.max(mu.heapTotal, 1)
         if (ratio > MEM_WARN_RATIO) {
-          emit({
+          onProgress({
             type: 'memory-warning',
             heapUsed: mu.heapUsed,
             heapTotal: mu.heapTotal,
@@ -549,10 +537,10 @@ async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
     }
 
     const f = files[i]
-    emit({ type: 'file-progress', current: i + 1, total: files.length, file: f.name })
+    onProgress({ type: 'file-progress', current: i + 1, total: files.length, file: f.name })
     try {
       const filePath = f.path || path.join(sourcesDir, f)
-      const r = await testSingleFile(filePath, song, opts, emit)
+      const r = await testSingleFile(filePath, song, opts, onProgress)
       results.push(r)
     } catch (err) {
       results.push({
