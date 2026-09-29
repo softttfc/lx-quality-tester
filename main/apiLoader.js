@@ -2,6 +2,38 @@ const fs = require('fs')
 const vm = require('vm')
 const { createLxSandbox } = require('./lxSandbox')
 
+// ═══════════════════════════════════════════════════════
+// ⭐ v2.2：console 环形缓冲
+//   默认只保留最近 500 条，防止音源内部大量日志把主进程
+//   stdout 管道塞满导致同步阻塞。
+//   调试时设置环境变量 DEBUG_SANDBOX=1 即可全量透传。
+// ═══════════════════════════════════════════════════════
+const DEBUG_SANDBOX = process.env.DEBUG_SANDBOX === '1'
+const LOG_RING_SIZE = 500
+const logRing = []
+let ringFullNotified = false
+
+function ringLog(level, args) {
+  if (DEBUG_SANDBOX) {
+    try {
+      console[level]('[音源]', ...args)
+    } catch (_) {}
+    return
+  }
+  try {
+    const line = args.map((a) => {
+      if (typeof a === 'string') return a
+      try { return JSON.stringify(a) } catch (_) { return String(a) }
+    }).join(' ')
+    logRing.push({ level, line, ts: Date.now() })
+    if (logRing.length > LOG_RING_SIZE) logRing.shift()
+    if (logRing.length === LOG_RING_SIZE && !ringFullNotified) {
+      ringFullNotified = true
+      try { console.log('[音源] 日志缓冲已达上限，仅保留最近 500 条（设置 DEBUG_SANDBOX=1 可全量透传）') } catch (_) {}
+    }
+  } catch (_) {}
+}
+
 function parseScriptHeader(script) {
   const match = script.match(/^\/\*![\s\S]*?\*\//)
   if (!match) return {}
@@ -216,6 +248,7 @@ async function loadApiSource(scriptPath, options = {}) {
       getRequestLog: () => [],
       getInitRequestLog: () => [],
       cleanup: () => {},
+      clearScriptInfo: () => {},
     }
   }
 
@@ -224,19 +257,24 @@ async function loadApiSource(scriptPath, options = {}) {
   const riskInfo = analyzeRisks(script)
   const info = { ...headerInfo, ...plainInfo, risk: riskInfo }
 
-  // ⭐ 取出受控定时器与 cleanup
-  const { lx, handlers, getRequestLog, getInitRequestLog, timers, cleanup } = createLxSandbox(
+  // ⭐ 取出受控定时器与 cleanup / clearScriptInfo
+  const {
+    lx, handlers,
+    getRequestLog, getInitRequestLog,
+    timers, cleanup, clearScriptInfo,
+  } = createLxSandbox(
     { ...info, rawScript: script },
     { requestFilter, logRequests }
   )
 
   const sandbox = {
     lx,
+    // ⭐ v2.2：console 改为环形缓冲，避免 stdout 同步阻塞
     console: {
-      log: (...a) => console.log('[音源]', ...a),
-      error: (...a) => console.error('[音源]', ...a),
-      warn: (...a) => console.warn('[音源]', ...a),
-      info: (...a) => console.info('[音源]', ...a),
+      log: (...a) => ringLog('log', a),
+      error: (...a) => ringLog('error', a),
+      warn: (...a) => ringLog('warn', a),
+      info: (...a) => ringLog('info', a),
       debug: () => {},
     },
     // ⭐ 使用受控定时器，测试完可统一清理
@@ -296,7 +334,12 @@ async function loadApiSource(scriptPath, options = {}) {
     vm.createContext(sandbox)
     vm.runInContext(script, sandbox, { timeout: scriptTimeout, filename: scriptPath })
   } catch (err) {
-    return { error: `执行失败: ${err.message}`, info, getRequestLog, getInitRequestLog, cleanup }
+    return {
+      error: `执行失败: ${err.message}`,
+      info,
+      getRequestLog, getInitRequestLog,
+      cleanup, clearScriptInfo,
+    }
   }
 
   const startTime = Date.now()
@@ -308,21 +351,34 @@ async function loadApiSource(scriptPath, options = {}) {
     return {
       error: `未触发 inited 事件（等待 ${initTimeout}ms 超时，可能音源内部抛异常）`,
       info,
-      getRequestLog,
-      getInitRequestLog,
-      cleanup,
+      getRequestLog, getInitRequestLog,
+      cleanup, clearScriptInfo,
     }
   }
   const initData = handlers.inited
   if (!initData.sources || typeof initData.sources !== 'object') {
-    return { error: 'inited 事件未声明 sources', info, getRequestLog, getInitRequestLog, cleanup }
+    return {
+      error: 'inited 事件未声明 sources',
+      info,
+      getRequestLog, getInitRequestLog,
+      cleanup, clearScriptInfo,
+    }
   }
   const sourceCount = Object.keys(initData.sources).length
   if (sourceCount === 0) {
-    return { error: 'inited 事件声明的 sources 为空', info, getRequestLog, getInitRequestLog, cleanup }
+    return {
+      error: 'inited 事件声明的 sources 为空',
+      info,
+      getRequestLog, getInitRequestLog,
+      cleanup, clearScriptInfo,
+    }
   }
 
-  return { lx, handlers, info, initData, getRequestLog, getInitRequestLog, cleanup }
+  return {
+    lx, handlers, info, initData,
+    getRequestLog, getInitRequestLog,
+    cleanup, clearScriptInfo,
+  }
 }
 
 module.exports = { loadApiSource, parseScriptHeader, detectPlainSource, analyzeRisks }
