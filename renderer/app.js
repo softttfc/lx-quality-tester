@@ -1381,36 +1381,19 @@ function setRunning(running) {
   $('btnSave').disabled = running || !lastReport
 }
 
-/* ═════════ 进度渲染（rAF 节流） ═════════ */
-// ⭐ v2.2：高频进度事件合并到下一帧渲染，避免样式重排风暴
-//   特殊事件（内存告警、API 错误）立即渲染，不排队
-let progressRaf = 0
-let pendingProgress = null
-
+/* ═════════ 进度渲染 ═════════ */
+// ⭐ 已移除 rAF 节流：之前会导致 file-progress 被后续 quality-start 覆盖，
+//   导致进度条永远停留在 0%。现在所有进度事件都直接渲染，UI 显示正确。
 function handleProgress(p) {
   if (!p || !p.type) return
-
-  // 关键事件立即渲染
-  if (p.type === 'memory-warning' || p.type === 'api-error') {
-    renderProgress(p)
-    return
-  }
-
-  pendingProgress = p
-  if (progressRaf) return
-  progressRaf = requestAnimationFrame(() => {
-    progressRaf = 0
-    const q = pendingProgress
-    pendingProgress = null
-    if (!q) return
-    renderProgress(q)
-  })
+  renderProgress(p)
 }
 
 function renderProgress(p) {
   if (!p) return
   if (p.type === 'file-progress') {
-    const pct = Math.round(((p.current - 1) / p.total) * 100)
+    // ⭐ 从 (current-1)/total 改为 current/total，首个文件也显示进度
+    const pct = Math.round((p.current / p.total) * 100)
     $('progressText').textContent = `[${p.current}/${p.total}] ${p.file}`
     $('progressBar').style.width = pct + '%'
     $('progressPercent').textContent = pct + '%'
