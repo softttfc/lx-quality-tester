@@ -1381,7 +1381,34 @@ function setRunning(running) {
   $('btnSave').disabled = running || !lastReport
 }
 
+/* ═════════ 进度渲染（rAF 节流） ═════════ */
+// ⭐ v2.2：高频进度事件合并到下一帧渲染，避免样式重排风暴
+//   特殊事件（内存告警、API 错误）立即渲染，不排队
+let progressRaf = 0
+let pendingProgress = null
+
 function handleProgress(p) {
+  if (!p || !p.type) return
+
+  // 关键事件立即渲染
+  if (p.type === 'memory-warning' || p.type === 'api-error') {
+    renderProgress(p)
+    return
+  }
+
+  pendingProgress = p
+  if (progressRaf) return
+  progressRaf = requestAnimationFrame(() => {
+    progressRaf = 0
+    const q = pendingProgress
+    pendingProgress = null
+    if (!q) return
+    renderProgress(q)
+  })
+}
+
+function renderProgress(p) {
+  if (!p) return
   if (p.type === 'file-progress') {
     const pct = Math.round(((p.current - 1) / p.total) * 100)
     $('progressText').textContent = `[${p.current}/${p.total}] ${p.file}`
@@ -1393,6 +1420,10 @@ function handleProgress(p) {
     $('progressText').textContent = `${p.file} · ${p.platform} · ${p.quality}`
   } else if (p.type === 'api-error') {
     $('progressText').textContent = `${p.file}: ${p.error}`
+  } else if (p.type === 'memory-warning') {
+    const mb = ((p.heapUsed || 0) / 1048576).toFixed(0)
+    const pct = ((p.ratio || 0) * 100).toFixed(0)
+    $('progressText').textContent = `⚠️ 内存占用 ${mb}MB (${pct}%)，已触发 GC`
   }
 }
 
