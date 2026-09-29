@@ -56,8 +56,15 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   let sequenceCounter = 0
 
   // ═══════════════════════════════════════════════════════
-  // ⭐ 受控定时器：跟踪沙箱内创建的所有 timer，测试完统一清理
+  // ⭐ v2.2：跟踪活动请求，cleanup 时统一 abort，避免 socket 泄漏
   // ═══════════════════════════════════════════════════════
+  const activeRequests = new Set()   // Set<AbortController>
+
+  // ═══════════════════════════════════════════════════════
+  // ⭐ v2.2：受控定时器 + 代际号
+  //   代际号用于防止 cleanup 之后由微任务/异步回调新创建的 timer 漏网
+  // ═══════════════════════════════════════════════════════
+  let generation = 0
   const timerHandles = new Set()
 
   function safeCallback(fn, args, tag) {
@@ -72,7 +79,9 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   }
 
   const trackedSetTimeout = (fn, ms, ...args) => {
+    const myGen = generation
     const id = setTimeout(() => {
+      if (myGen !== generation) return   // ⭐ 已过代，丢弃
       timerHandles.delete(id)
       safeCallback(fn, args, 'setTimeout')
     }, ms)
@@ -81,7 +90,12 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   }
 
   const trackedSetInterval = (fn, ms, ...args) => {
+    const myGen = generation
     const id = setInterval(() => {
+      if (myGen !== generation) {
+        try { clearInterval(id) } catch (_) {}
+        return
+      }
       safeCallback(fn, args, 'setInterval')
     }, ms)
     timerHandles.add(id)
@@ -89,7 +103,9 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   }
 
   const trackedSetImmediate = (fn, ...args) => {
+    const myGen = generation
     const id = setImmediate(() => {
+      if (myGen !== generation) return
       timerHandles.delete(id)
       safeCallback(fn, args, 'setImmediate')
     })
@@ -120,13 +136,31 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
   }
 
   function cleanup() {
+    // ⭐ 递增代际，使已排队的旧 timer 回调自动失效
+    generation++
+
     for (const id of timerHandles) {
       try { clearTimeout(id) } catch (_) {}
       try { clearInterval(id) } catch (_) {}
       try { clearImmediate(id) } catch (_) {}
     }
     timerHandles.clear()
+
+    // ⭐ 统一 abort 所有在途请求，释放 socket / 连接
+    for (const ctrl of activeRequests) {
+      try { ctrl.abort() } catch (_) {}
+    }
+    activeRequests.clear()
+
     try { requestLog.length = 0 } catch (_) {}
+  }
+
+  function clearScriptInfo() {
+    try {
+      if (lx && lx.currentScriptInfo) {
+        lx.currentScriptInfo.rawScript = ''
+      }
+    } catch (_) {}
   }
 
   const lx = {
@@ -262,8 +296,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
       }
 
       // ⭐ v2.1：请求过滤（支持白名单 allowedHosts + 黑名单 blockedHosts）
-      //   - 多轮影子测试用 blockedHosts 强制音源 fallback
-      //   - backendTester 隔离测试用 allowedHosts 只放行单个 host
       if (requestFilter && host) {
         let isAllowed = true
 
@@ -274,7 +306,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
           isAllowed = allowed.has(host)
         }
 
-        // ⭐ 黑名单优先判定
         const blocked = requestFilter.blockedHosts
         if (blocked) {
           let isBlocked = false
@@ -297,7 +328,6 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             logEntry.duration = logEntry.endTime - logEntry.timestamp
             logEntry.status = 'blocked'
             logEntry.error = 'ECONNREFUSED'
-            // ⭐ 标记为多轮影子测试的人为拦截（区别于黑名单模式）
             logEntry.blockedByMultiRound = Array.isArray(requestFilter.blockedHosts) ||
               requestFilter.blockedHosts instanceof Set
           }
@@ -317,6 +347,10 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
       const headers = opts.headers || {}
       const binary = opts.binary === true
 
+      // ⭐ v2.2：为每个请求创建 AbortController
+      const controller = new AbortController()
+      activeRequests.add(controller)
+
       const config = {
         url,
         method,
@@ -326,6 +360,7 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         responseType: binary ? 'arraybuffer' : 'text',
         transformResponse: [(d) => d],
         maxRedirects: 5,
+        signal: controller.signal,
       }
 
       if (opts.body !== undefined) {
@@ -375,6 +410,16 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
         })
         .catch((err) => {
           if (aborted) return
+          // ⭐ v2.2：cleanup 触发的 abort，静默忽略，不回调
+          if (err && (err.name === 'CanceledError' || err.code === 'ERR_CANCELED')) {
+            if (logEntry) {
+              logEntry.endTime = Date.now()
+              logEntry.duration = logEntry.endTime - logEntry.timestamp
+              logEntry.status = 'fail'
+              logEntry.error = 'aborted by cleanup'
+            }
+            return
+          }
           if (logEntry) {
             logEntry.endTime = Date.now()
             logEntry.duration = logEntry.endTime - logEntry.timestamp
@@ -391,8 +436,16 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
             )
           }
         })
+        .finally(() => {
+          activeRequests.delete(controller)
+        })
 
-      return () => { aborted = true }
+      return () => {
+        if (aborted) return
+        aborted = true
+        try { controller.abort() } catch (_) {}
+        activeRequests.delete(controller)
+      }
     },
   }
 
@@ -432,6 +485,7 @@ function createLxSandbox(scriptInfo = {}, options = {}) {
     getInitRequestLog: () => requestLog.filter((r) => r.inInitWindow === true),
     timers,
     cleanup,
+    clearScriptInfo,
   }
 }
 
