@@ -1,10 +1,7 @@
 const path = require('path')
 const axios = require('axios')
-const { execFile } = require('child_process')
-const { promisify } = require('util')
+const { spawn } = require('child_process')
 const { loadApiSource } = require('./apiLoader')
-
-const execFileAsync = promisify(execFile)
 
 const QUALITY_RANK = [
   'master',
@@ -32,9 +29,16 @@ function getPlayerUserAgent(source) {
 
 /**
  * 从 URL 拉取前 N 字节并检测实际音质
+ * ⭐ v2.2：使用 AbortController 真取消，避免 socket 半关闭堆积
  */
 async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
   const result = { accessible: false, quality: null, contentType: null, size: null }
+
+  const controller = new AbortController()
+  const abortTimer = setTimeout(() => {
+    try { controller.abort() } catch (_) {}
+  }, timeout)
+
   try {
     const headers = {
       Range: `bytes=0-${bytes - 1}`,
@@ -43,12 +47,12 @@ async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
     const res = await axios.get(url, {
       headers,
       responseType: 'stream',
+      signal: controller.signal,
       timeout,
       validateStatus: () => true,
       maxRedirects: 5,
     })
 
-    // ⭐ 修复：非 2xx/3xx 也要销毁流，否则 socket 泄漏
     if (res.status < 200 || res.status >= 400) {
       try {
         if (res.data && typeof res.data.destroy === 'function') res.data.destroy()
@@ -68,10 +72,11 @@ async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
       const finish = () => {
         if (resolved) return
         resolved = true
-        // ⭐ 修复：拿到数据后主动销毁流，避免连接悬挂
+        // ⭐ 主动销毁流 + abort，避免服务器还在推数据
         try {
           if (res.data && typeof res.data.destroy === 'function') res.data.destroy()
         } catch (_) {}
+        try { controller.abort() } catch (_) {}
         resolve(Buffer.concat(chunks))
       }
       res.data.on('data', (chunk) => {
@@ -88,36 +93,75 @@ async function fetchAndDetect(url, source, bytes = 16384, timeout = 8000) {
 
     result.quality = detectQualityFromBuffer(buffer)
   } catch (e) {
-    // 忽略错误
+    // abort 或网络错误，忽略
+  } finally {
+    clearTimeout(abortTimer)
   }
   return result
 }
 
 /**
  * 用 ffmpeg 解码前 3 秒，验证 URL 是否真的能播放
+ * ⭐ v2.2：改用 spawn，超时后杀进程树，避免僵尸进程堆积
  */
-async function checkPlayableWithFfmpeg(url, source, timeout = 15000) {
-  const args = ['-v', 'error', '-nostdin']
+function checkPlayableWithFfmpeg(url, source, timeout = 15000) {
+  return new Promise((resolve) => {
+    const args = ['-v', 'error', '-nostdin']
+    if (source !== 'wy') {
+      args.push('-user_agent', PLAYER_UA_DEFAULT)
+    }
+    args.push('-i', url, '-t', '3', '-f', 'null', '-')
 
-  if (source !== 'wy') {
-    args.push('-user_agent', PLAYER_UA_DEFAULT)
-  }
+    let child
+    try {
+      child = spawn('ffmpeg', args, {
+        windowsHide: true,
+        // Unix 下用独立进程组，方便整组 kill
+        detached: process.platform !== 'win32',
+      })
+    } catch (e) {
+      return resolve({ playable: false, error: 'ffmpeg spawn failed' })
+    }
 
-  args.push('-i', url, '-t', '3', '-f', 'null', '-')
+    let stderr = ''
+    let settled = false
+    let killTimer = null
 
-  try {
-    await execFileAsync('ffmpeg', args, {
-      timeout,
-      maxBuffer: 1024 * 1024,
+    const settle = (v) => {
+      if (settled) return
+      settled = true
+      if (killTimer) clearTimeout(killTimer)
+      resolve(v)
+    }
+
+    killTimer = setTimeout(() => {
+      try {
+        if (process.platform === 'win32') {
+          // Windows: 用 taskkill 杀整棵进程树
+          try {
+            spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true })
+          } catch (_) {}
+        } else {
+          // Unix: 杀整个进程组
+          try { process.kill(-child.pid, 'SIGKILL') }
+          catch (_) { try { child.kill('SIGKILL') } catch (_) {} }
+        }
+      } catch (_) {}
+      // 给 OS 一点时间回收
+      setTimeout(() => settle({ playable: false, error: 'ffmpeg timeout' }), 300)
+    }, timeout)
+
+    child.stderr.on('data', (d) => {
+      if (stderr.length < 2000) stderr += d.toString()
     })
-    return { playable: true, error: null }
-  } catch (e) {
-    const errMsg =
-      e && (e.stderr || e.message)
-        ? String(e.stderr || e.message).slice(0, 300)
-        : 'ffmpeg failed'
-    return { playable: false, error: errMsg }
-  }
+    child.on('error', (e) => {
+      settle({ playable: false, error: String(e.message || e) })
+    })
+    child.on('close', (code) => {
+      if (code === 0) settle({ playable: true, error: null })
+      else settle({ playable: false, error: stderr.slice(0, 300) || `exit ${code}` })
+    })
+  })
 }
 
 /**
@@ -329,7 +373,7 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
 
   const loaded = await loadApiSource(scriptPath)
 
-  // ⭐ 无论走到哪一步，finally 里都会释放沙箱定时器
+  // ⭐ 无论走到哪一步，finally 里都会释放沙箱定时器 + abort 请求 + 清理 scriptInfo
   try {
     if (loaded.error) {
       onProgress({ type: 'api-error', file: fileName, error: loaded.error })
@@ -452,22 +496,63 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
 
     return { file: fileName, info: scriptInfo, platforms, error: null }
   } finally {
-    // ⭐ 释放沙箱定时器，避免脚本里挂的 setInterval 泄漏
+    // ⭐ 释放沙箱定时器 + abort 请求 + 清空 rawScript
     if (typeof loaded.cleanup === 'function') {
       try { loaded.cleanup() } catch (_) {}
+    }
+    if (typeof loaded.clearScriptInfo === 'function') {
+      try { loaded.clearScriptInfo() } catch (_) {}
     }
   }
 }
 
+/**
+ * ⭐ v2.2：
+ *   - 每 10 个文件检查内存，超过 85% 主动 GC 并告警
+ *   - 进度事件节流 200ms，避免 IPC 队列堆积
+ */
 async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
   const results = []
   const opts = options || {}
+  const MEM_WARN_RATIO = 0.85
+  const PROGRESS_THROTTLE_MS = 200
+
+  let lastEmitAt = 0
+  const emit = (p) => {
+    if (!p || !p.type) return
+    const now = Date.now()
+    if (p.type === 'file-progress' || p.type === 'quality-start') {
+      if (now - lastEmitAt < PROGRESS_THROTTLE_MS) return
+      lastEmitAt = now
+    }
+    onProgress(p)
+  }
+
   for (let i = 0; i < files.length; i++) {
+    // ⭐ 每 10 个文件检查内存
+    if (i > 0 && i % 10 === 0) {
+      try {
+        const mu = process.memoryUsage()
+        const ratio = mu.heapUsed / Math.max(mu.heapTotal, 1)
+        if (ratio > MEM_WARN_RATIO) {
+          emit({
+            type: 'memory-warning',
+            heapUsed: mu.heapUsed,
+            heapTotal: mu.heapTotal,
+            ratio: +ratio.toFixed(3),
+          })
+          if (typeof global.gc === 'function') {
+            try { global.gc() } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
     const f = files[i]
-    onProgress({ type: 'file-progress', current: i + 1, total: files.length, file: f.name })
+    emit({ type: 'file-progress', current: i + 1, total: files.length, file: f.name })
     try {
       const filePath = f.path || path.join(sourcesDir, f)
-      const r = await testSingleFile(filePath, song, opts, onProgress)
+      const r = await testSingleFile(filePath, song, opts, emit)
       results.push(r)
     } catch (err) {
       results.push({
