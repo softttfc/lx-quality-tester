@@ -2,11 +2,36 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
+// ═══════════════════════════════════════════════════════
+// ⭐ v2.2：V8 堆上限 + 暴露 gc
+//   - max-old-space-size=2048：把 OOM 提前到 2GB，避免涨到 4GB 才崩
+//   - expose-gc：允许测试循环里手动 global.gc() 回收
+//   ⚠ 必须在 app.whenReady() 之前调用
+// ═══════════════════════════════════════════════════════
+try {
+  app.commandLine.appendSwitch('js-flags', '--max-old-space-size=2048 --expose-gc')
+} catch (_) {}
+
+// ═══════════════════════════════════════════════════════
+// ⭐ v2.2：崩溃诊断钩子，把"无提示退出"变成"有日志可查"
+// ═══════════════════════════════════════════════════════
 process.on('unhandledRejection', (reason) => {
   console.error('[main] unhandledRejection（已拦截，防止主进程退出）:', reason)
 })
 process.on('uncaughtException', (err) => {
   console.error('[main] uncaughtException（已拦截，防止主进程退出）:', err)
+})
+process.on('exit', (code) => {
+  console.error('[main] process exit, code =', code)
+})
+process.on('beforeExit', (code) => {
+  console.error('[main] beforeExit, code =', code)
+})
+process.on('SIGTERM', () => {
+  console.error('[main] SIGTERM received')
+})
+process.on('SIGINT', () => {
+  console.error('[main] SIGINT received')
 })
 
 const { testApiSource } = require('./tester')
@@ -39,6 +64,17 @@ function createWindow() {
 }
 
 app.whenReady().then(createWindow)
+
+// ⭐ v2.2：Chromium 子进程 / 渲染进程崩溃日志
+app.on('render-process-gone', (event, wc, details) => {
+  console.error('[main] render-process-gone:', details)
+})
+app.on('child-process-gone', (event, details) => {
+  console.error('[main] child-process-gone:', details)
+})
+app.on('gpu-process-crashed', (event, killed) => {
+  console.error('[main] gpu-process-crashed:', killed)
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
