@@ -3,11 +3,19 @@
 
   let initialized = false
   let repos = []
-  let currentView = []
+  let allRecords = []           // ⭐ 扫描全量记录
+  let currentView = []          // ⭐ 当前显示（可能被"只显示明文"过滤）
   let rawResult = null
   let scanning = false
-  const checked = new Set()
+  let plainOnly = false         // ⭐ 只显示明文开关
+  const checkedKeys = new Set() // ⭐ 用记录键存储勾选，避免索引错位
   let unsubscribe = null
+
+  // ⭐ 记录键：跨过滤/重绘稳定
+  function recordKey(r) {
+    if (!r) return ''
+    return `${r.repo || ''}\u0001${r.path || ''}\u0001${r.name || ''}`
+  }
 
   function escapeHtml(s) {
     if (s == null) return ''
@@ -131,6 +139,8 @@
         <span class="disc-hint">结果（首列勾选下载）</span>
         <button id="discBtnSelectAll" style="flex:0 0 auto; width:auto">全选</button>
         <button id="discBtnSelectNone" style="flex:0 0 auto; width:auto">全不选</button>
+        <button id="discBtnPlainOnly" style="flex:0 0 auto; width:auto">只显示明文</button>
+        <span class="disc-hint" id="discPlainCount" style="margin-left:6px"></span>
       </div>
     </div>
     <div class="disc-result-wrap">
@@ -138,8 +148,8 @@
         <thead>
           <tr>
             <th>选中</th><th>来源仓库</th><th>文件名</th><th>音源名称(@name)</th>
-            <th>版本(@version)</th><th>状态</th><th>收录仓数</th><th>作者(@author)</th>
-            <th>大小</th><th>已下载</th><th>备注</th>
+            <th>版本(@version)</th><th>状态</th><th>明文</th><th>收录仓数</th>
+            <th>作者(@author)</th><th>大小</th><th>已下载</th><th>备注</th>
           </tr>
         </thead>
         <tbody id="discResultTbody"></tbody>
@@ -206,22 +216,48 @@
     } catch (_) {}
   }
 
+  // ---------------- 明文单元格 ----------------
+  function renderPlainCell(r) {
+    if (r.status !== '已扫描') {
+      const reason = r.plainReason || r.error || ''
+      return `<span class="disc-plain-unknown" title="${escapeHtml(reason)}">—</span>`
+    }
+    if (r.plain === true) {
+      return '<span class="disc-plain-ok">✅ 明文</span>'
+    }
+    if (r.plainKind === 'weak') {
+      const reason = r.plainReason || '疑似混淆'
+      return `<span class="disc-plain-warn" title="${escapeHtml(reason)}">⚠️ 疑似混淆</span>`
+    }
+    const reason = r.plainReason || ''
+    return `<span class="disc-plain-fail" title="${escapeHtml(reason)}">🔒 非明文</span>`
+  }
+
   // ---------------- 结果表格 ----------------
-  function renderResults(records) {
-    currentView = records || []
+  function renderRows() {
     const tbody = $('discResultTbody')
     if (!tbody) return
-    tbody.innerHTML = currentView.map((r, i) => {
-      const checkedAttr = checked.has(i) ? 'checked' : ''
+
+    if (currentView.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:#999;padding:20px">${
+        plainOnly ? '没有明文音源' : '没有结果'
+      }</td></tr>`
+      return
+    }
+
+    tbody.innerHTML = currentView.map((r) => {
+      const key = recordKey(r)
+      const checkedAttr = checkedKeys.has(key) ? 'checked' : ''
       const downloaded = r.downloaded ? '✅' : ''
       const statusCls = r.status === '已扫描' ? 'disc-status-ok' : 'disc-status-fail'
-      return `<tr data-idx="${i}">
-        <td><input type="checkbox" class="disc-cb" data-idx="${i}" ${checkedAttr}></td>
+      return `<tr data-key="${escapeHtml(key)}">
+        <td><input type="checkbox" class="disc-cb" data-key="${escapeHtml(key)}" ${checkedAttr}></td>
         <td>${escapeHtml(r.repo || '')}</td>
         <td>${escapeHtml((r.path || '').split('/').pop() || '')}</td>
         <td>${escapeHtml(r.name || '')}</td>
         <td>${escapeHtml(r.version || '-')}</td>
         <td class="${statusCls}">${escapeHtml(r.status || '')}</td>
+        <td>${renderPlainCell(r)}</td>
         <td>${r.repo_count || 1}</td>
         <td>${escapeHtml(r.author || '-')}</td>
         <td>${humanSize(r.size)}</td>
@@ -232,18 +268,44 @@
 
     tbody.querySelectorAll('.disc-cb').forEach((cb) => {
       cb.addEventListener('change', () => {
-        const idx = parseInt(cb.dataset.idx, 10)
-        if (cb.checked) checked.add(idx)
-        else checked.delete(idx)
+        const key = cb.dataset.key
+        if (cb.checked) checkedKeys.add(key)
+        else checkedKeys.delete(key)
         updateDownloadButton()
       })
     })
   }
 
+  function updatePlainOnlyButton() {
+    const btn = $('discBtnPlainOnly')
+    if (!btn) return
+    btn.textContent = plainOnly ? '✓ 仅显示明文' : '只显示明文'
+    btn.classList.toggle('active', plainOnly)
+  }
+
+  function updatePlainCount() {
+    const el = $('discPlainCount')
+    if (!el) return
+    if (!allRecords.length) { el.textContent = ''; return }
+    const total = allRecords.length
+    const plainCount = allRecords.filter((r) => r.plain === true).length
+    el.textContent = `明文 ${plainCount}/${total}`
+  }
+
+  function applyFilterAndRender() {
+    currentView = plainOnly
+      ? allRecords.filter((r) => r.plain === true)
+      : allRecords.slice()
+    renderRows()
+    updatePlainOnlyButton()
+    updatePlainCount()
+    updateDownloadButton()
+  }
+
   function updateDownloadButton() {
     const btn = $('discBtnDownload')
     if (!btn) return
-    btn.disabled = checked.size === 0 || scanning
+    btn.disabled = checkedKeys.size === 0 || scanning
   }
 
   // ---------------- 扫描 ----------------
@@ -267,7 +329,7 @@
     scanning = true
     $('discBtnScan').disabled = true
     $('discBtnCancel').disabled = false
-    checked.clear()
+    checkedKeys.clear()            // ⭐ 重新扫描时清空勾选
     setStatus('扫描中...')
     clearLog()
 
@@ -287,9 +349,16 @@
     try {
       const r = await window.api.discoverScan(params)
       rawResult = r
-      renderResults(r.records)
+      allRecords = r.records || []           // ⭐ 全量记录
+      applyFilterAndRender()                 // ⭐ 按当前 plainOnly 渲染
       setStatus(`扫描完成：原始 ${r.found} 条，显示 ${r.shown} 条`)
       for (const m of (r.messages || [])) log('info', m)
+
+      // ⭐ 明文统计日志
+      const plainCount = allRecords.filter((x) => x.plain === true).length
+      const weakCount = allRecords.filter((x) => x.plainKind === 'weak').length
+      const strongCount = allRecords.filter((x) => x.plainKind === 'strong').length
+      log('info', `明文判读：明文 ${plainCount} 条，疑似混淆 ${weakCount} 条，强混淆/失败 ${strongCount} 条`)
     } catch (err) {
       log('error', '扫描失败：' + (err.message || err))
       setStatus('扫描失败：网络不可达，请检查代理或稍后重试')
@@ -311,12 +380,14 @@
 
   // ---------------- 下载 ----------------
   async function doDownload() {
-    if (!checked.size) return
+    if (!checkedKeys.size) return
     const targetDir = $('discDownloadDir').value.trim()
     if (!targetDir) { alert('请先设置下载目录'); return }
 
     const forceFailed = $('discForceFailed').checked
-    const selected = [...checked].map((i) => currentView[i]).filter(Boolean)
+    // ⭐ 从全量记录里按 key 取，确保"被过滤但仍勾选"的记录也进入下载
+    const selected = allRecords.filter((r) => checkedKeys.has(recordKey(r)))
+    if (!selected.length) return
 
     if (!confirm(`即将下载 ${selected.length} 个音源到：\n${targetDir}\n\n继续？`)) return
 
@@ -348,7 +419,7 @@
           rec.downloaded_file = okFiles.get(rec.name) || ''
         }
       }
-      renderResults(currentView)
+      renderRows()   // ⭐ 只重绘当前视图
     } catch (err) {
       log('error', '下载异常：' + (err.message || err))
     } finally {
@@ -367,6 +438,7 @@
       found: rawResult.found,
       shown: rawResult.shown,
       apiCalls: rawResult.apiCalls,
+      filtered: plainOnly,                       // ⭐ 记录当前是否处于"只显示明文"过滤
       records: currentView.map((r) => ({ ...r })),
     }
     try {
@@ -418,7 +490,7 @@
     } catch (_) {}
   }
 
-  // ---------------- 编辑列表（替换原上移/下移） ----------------
+  // ---------------- 编辑列表 ----------------
   function openEditModal() {
     const modal = $('discEditModal')
     const ta = $('discEditTextarea')
@@ -530,15 +602,22 @@
       }
     })
 
+    // ⭐ 全选/全不选：只作用于当前可见的 currentView
     $('discBtnSelectAll').addEventListener('click', () => {
-      currentView.forEach((_, i) => checked.add(i))
-      renderResults(currentView)
+      currentView.forEach((r) => checkedKeys.add(recordKey(r)))
+      renderRows()
       updateDownloadButton()
     })
     $('discBtnSelectNone').addEventListener('click', () => {
-      checked.clear()
-      renderResults(currentView)
+      checkedKeys.clear()
+      renderRows()
       updateDownloadButton()
+    })
+
+    // ⭐ 只显示明文：切换过滤条件，保留已勾选项
+    $('discBtnPlainOnly').addEventListener('click', () => {
+      plainOnly = !plainOnly
+      applyFilterAndRender()
     })
 
     $('discBtnPickDir').addEventListener('click', async () => {
@@ -556,8 +635,11 @@
       if (el) el.addEventListener('change', persistConfig)
     }
 
+    updatePlainOnlyButton()
+    updatePlainCount()
     setStatus('就绪。添加候选仓库后点击“扫描仓库”。')
     log('info', '检索标签页已就绪。状态列只会出现「已扫描 / 抓取失败」。')
+    log('info', '明文列为静态正则判读结果，仅供参考，不代表安全性。')
   }
 
   window.initDiscoverTab = init
