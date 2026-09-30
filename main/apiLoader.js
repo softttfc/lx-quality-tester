@@ -2,6 +2,9 @@ const fs = require('fs')
 const vm = require('vm')
 const { createLxSandbox } = require('./lxSandbox')
 
+// ⚠️ detectPlainSource 定义在 ./plainDetector.js，请勿在本文件重新实现
+const { detectPlainSource } = require('./plainDetector')
+
 // ═══════════════════════════════════════════════════════
 // ⭐ v2.2：console 环形缓冲
 //   默认只保留最近 500 条，防止音源内部大量日志把主进程
@@ -49,59 +52,6 @@ function parseScriptHeader(script) {
     author: ex('author'),
     homepage: ex('homepage'),
   }
-}
-
-function detectPlainSource(script) {
-  if (typeof script !== 'string' || !script.trim()) {
-    return { plain: false, plainReason: '空文件', plainKind: 'strong', weakScore: 0 }
-  }
-
-  const strongRules = [
-    { re: /\beval\s*\(/,              reason: '包含 eval 动态执行' },
-    { re: /\bnew\s+Function\s*\(/,    reason: '包含 Function 构造' },
-    { re: /\batob\s*\(/,              reason: '包含 atob 解码' },
-    { re: /fromCharCode/,             reason: '包含 fromCharCode 拼接' },
-    { re: /[\w+/]{500,}={0,2}/,       reason: '疑似超长 base64 串' },
-    { re: /(\\x[0-9a-fA-F]{2}){30,}/, reason: '疑似十六进制转义混淆' },
-  ]
-  for (const { re, reason } of strongRules) {
-    if (re.test(script)) {
-      return { plain: false, plainReason: reason, plainKind: 'strong', weakScore: 0 }
-    }
-  }
-
-  let score = 0
-  const reasons = []
-  const add = (s, reason) => { if (s > 0) { score += s; reasons.push(reason) } }
-
-  const hexIds = script.match(/_0x[a-f0-9]{3,}/gi) || []
-  add(Math.min(hexIds.length, 6), `_0x 标识符 ×${hexIds.length}`)
-
-  if (/while\s*\(\s*!!\s*\[\s*\]\s*\)/.test(script)) {
-    add(4, 'while(!![]) 旋转循环')
-  }
-  if (/\[\s*['"]push['"]\s*\]\s*\(\s*[A-Za-z_$][\w$]*\s*\[\s*['"]shift['"]\s*\]/.test(script)) {
-    add(4, '字符串数组旋转')
-  }
-  const hexLits = script.match(/0x[0-9a-fA-F]{2,}/g) || []
-  const hexRatio = hexLits.length / Math.max(script.length / 500, 1)
-  add(Math.min(Math.floor(hexRatio), 4), `十六进制字面量 ×${hexLits.length}`)
-
-  const proxyFns = script.match(
-    /['"][A-Za-z]{4,8}['"]\s*:\s*function\s*\(\s*\w+\s*\)\s*\{\s*return\s+\w+\s*[+\-*/]\s*\w+/
-  )
-  if (proxyFns) add(3, '代理函数表')
-
-  if (score >= 5) {
-    return {
-      plain: false,
-      plainReason: `疑似混淆（评分 ${score}）：${reasons.join('、')}`,
-      plainKind: 'weak',
-      weakScore: score,
-    }
-  }
-
-  return { plain: true, plainReason: '', plainKind: 'plain', weakScore: score }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -381,4 +331,5 @@ async function loadApiSource(scriptPath, options = {}) {
   }
 }
 
+// ⚠️ detectPlainSource 定义在 plainDetector.js，导出仅为兼容既有调用方
 module.exports = { loadApiSource, parseScriptHeader, detectPlainSource, analyzeRisks }
