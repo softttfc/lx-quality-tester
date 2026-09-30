@@ -50,6 +50,13 @@
   min-width: 60px;
   margin-bottom: 0;
 }
+/* ⭐ 按钮激活态（用于「只显示明文」） */
+.disc-btn-row button.active {
+  background: #e0f0ff;
+  color: #007aff;
+  border-color: #007aff;
+  font-weight: 500;
+}
 
 /* 仓库列表 */
 .disc-repo-table-wrap {
@@ -137,29 +144,33 @@
   font-weight: normal;
   color: #666;
 }
-/* 列宽（fixed 布局下必须显式指定） */
+/* 列宽（fixed 布局下必须显式指定）
+ * 列顺序：1选中 2来源仓库 3文件名 4音源名称 5版本 6状态
+ *         7明文 8收录仓数 9作者 10大小 11已下载 12备注 */
 .disc-result-table th:nth-child(1),
 .disc-result-table td:nth-child(1) { width: 46px; text-align: center; }
 .disc-result-table th:nth-child(2),
-.disc-result-table td:nth-child(2) { width: 160px; }
+.disc-result-table td:nth-child(2) { width: 150px; }
 .disc-result-table th:nth-child(3),
-.disc-result-table td:nth-child(3) { width: 160px; }
+.disc-result-table td:nth-child(3) { width: 150px; }
 .disc-result-table th:nth-child(4),
-.disc-result-table td:nth-child(4) { width: 160px; }
+.disc-result-table td:nth-child(4) { width: 150px; }
 .disc-result-table th:nth-child(5),
-.disc-result-table td:nth-child(5) { width: 90px; }
+.disc-result-table td:nth-child(5) { width: 80px; }
 .disc-result-table th:nth-child(6),
-.disc-result-table td:nth-child(6) { width: 80px; }
+.disc-result-table td:nth-child(6) { width: 70px; }
 .disc-result-table th:nth-child(7),
-.disc-result-table td:nth-child(7) { width: 70px; text-align: center; }
+.disc-result-table td:nth-child(7) { width: 82px; text-align: center; }
 .disc-result-table th:nth-child(8),
-.disc-result-table td:nth-child(8) { width: 100px; }
+.disc-result-table td:nth-child(8) { width: 70px; text-align: center; }
 .disc-result-table th:nth-child(9),
-.disc-result-table td:nth-child(9) { width: 80px; }
+.disc-result-table td:nth-child(9) { width: 100px; }
 .disc-result-table th:nth-child(10),
-.disc-result-table td:nth-child(10) { width: 64px; text-align: center; }
+.disc-result-table td:nth-child(10) { width: 70px; }
 .disc-result-table th:nth-child(11),
-.disc-result-table td:nth-child(11) { width: auto; }
+.disc-result-table td:nth-child(11) { width: 64px; text-align: center; }
+.disc-result-table th:nth-child(12),
+.disc-result-table td:nth-child(12) { width: auto; }
 .disc-result-table input.disc-cb {
   width: 14px;
   height: 14px;
@@ -168,6 +179,12 @@
 }
 .disc-status-ok { color: #34c759; }
 .disc-status-fail { color: #ff3b30; }
+
+/* ⭐ 明文单元格样式 */
+.disc-plain-ok      { color: #34c759; font-size: 11px; }
+.disc-plain-warn    { color: #ff9500; font-size: 11px; cursor: help; }
+.disc-plain-fail    { color: #ff3b30; font-size: 11px; cursor: help; }
+.disc-plain-unknown { color: #bbb;    font-size: 11px; }
 
 .disc-status-bar {
   padding: 6px 10px;
