@@ -615,6 +615,25 @@ details summary {
   font-weight: 500;
 }
 
+/* ⭐ A 方案：平台表格折叠 */
+.platform-stats .toggle-table {
+  margin-left: 10px;
+  color: #007aff;
+  text-decoration: none;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.platform-stats .toggle-table:hover {
+  text-decoration: underline;
+}
+.quality-table-container {
+  margin-top: 6px;
+}
+.quality-table-container:empty {
+  display: none;
+}
+
 .quality-table {
   width: 100%;
   border-collapse: collapse;
