@@ -9,7 +9,7 @@ const fs = require('fs')
 //   ⚠ 必须在 app.whenReady() 之前调用
 // ═══════════════════════════════════════════════════════
 try {
-  app.commandLine.appendSwitch('js-flags', '--max-old-space-size=2048 --expose-gc')
+  app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096 --expose-gc')
 } catch (_) {}
 
 // ═══════════════════════════════════════════════════════
