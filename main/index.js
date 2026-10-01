@@ -39,7 +39,7 @@ const { searchAllPlatforms } = require('./searchService')
 const { analyzeSources, mergeSources } = require('./merger')
 const { testBackends } = require('./backendTester')
 const { runShadowTest } = require('./hostScorer')
-const { asyncPool } = require('./concurrency')
+const { asyncPool } = require('./discover/concurrency')
 const discover = require('./discover')
 
 let mainWindow = null
