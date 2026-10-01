@@ -17,6 +17,9 @@ let heavyTestLock = null   // 'backend' | 'shadow' | null —— 两个测试互
 // ⭐ v1.3.0：共享后端提示防抖
 let sharedHintTimer = null
 
+// ⭐ v2.3：文件级并发度（1–8，默认 3）
+const FILE_CONCURRENCY = 3
+
 /* ═════════ 目录选择 ═════════ */
 $('btnSelectDir').addEventListener('click', async () => {
   const dir = await window.api.selectSourcesDir()
@@ -102,6 +105,7 @@ $('btnStart').addEventListener('click', async () => {
     delay: parseInt($('delay').value, 10) || 200,
     enableFfmpegCheck: true,
     ffmpegTimeout: 15000,
+    concurrency: FILE_CONCURRENCY,   // ⭐ v2.3：文件级并发度
   }
 
   setRunning(true)
@@ -317,7 +321,11 @@ $('btnTestBackends').addEventListener('click', async () => {
   $('backendSummary').style.display = 'none'
 
   backendUnsubscribe = window.api.onBackendProgress((p) => {
-    if (p.type === 'file-progress') {
+    // ⭐ v2.3：新增 file-start 分支（只更新文本，不改进度条）
+    if (p.type === 'file-start') {
+      $('backendStatus').textContent = `处理中: ${p.file}`
+    } else if (p.type === 'file-progress') {
+      // ⭐ v2.3：current 语义 = "已完成文件数"
       $('backendStatus').textContent = `[${p.current}/${p.total}] ${p.file}`
     } else if (p.type === 'backend-platform-start') {
       $('backendStatus').textContent = `${p.file} · ${p.platform}`
@@ -330,7 +338,11 @@ $('btnTestBackends').addEventListener('click', async () => {
     const r = await window.api.testBackends({
       files: availableFiles,
       song,
-      options: { platforms: ['kw', 'kg', 'tx', 'wy', 'mg'], timeout: 15000 },
+      options: {
+        platforms: ['kw', 'kg', 'tx', 'wy', 'mg'],
+        timeout: 15000,
+        concurrency: FILE_CONCURRENCY,   // ⭐ v2.3：文件级并发度
+      },
     })
     if (!r.ok) {
       $('backendStatus').textContent = '检测失败: ' + (r.error || '未知错误')
@@ -1382,8 +1394,9 @@ function setRunning(running) {
 }
 
 /* ═════════ 进度渲染 ═════════ */
-// ⭐ 已移除 rAF 节流：之前会导致 file-progress 被后续 quality-start 覆盖，
-//   导致进度条永远停留在 0%。现在所有进度事件都直接渲染，UI 显示正确。
+// ⭐ v2.3：新增 `file-start` 分支
+//   - `file-start`：只更新文本（"处理中: xxx"），不改进度条
+//   - `file-progress`：`current` 语义 = "已完成文件数"，进度条严格单调递增
 function handleProgress(p) {
   if (!p || !p.type) return
   renderProgress(p)
@@ -1391,8 +1404,12 @@ function handleProgress(p) {
 
 function renderProgress(p) {
   if (!p) return
-  if (p.type === 'file-progress') {
-    // ⭐ 从 (current-1)/total 改为 current/total，首个文件也显示进度
+
+  if (p.type === 'file-start') {
+    // ⭐ v2.3：并发新增，只更新文本，进度条不动
+    $('progressText').textContent = `处理中: ${p.file}`
+  } else if (p.type === 'file-progress') {
+    // ⭐ v2.3：current 语义 = "已完成文件数"
     const pct = Math.round((p.current / p.total) * 100)
     $('progressText').textContent = `[${p.current}/${p.total}] ${p.file}`
     $('progressBar').style.width = pct + '%'
