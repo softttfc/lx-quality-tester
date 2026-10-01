@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile)
 
 const GITHUB_API = 'https://api.github.com'
 const RAW_HOST = 'https://raw.githubusercontent.com'
+const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/gh'
 
 const MIRRORS = [
   '',
@@ -27,6 +28,41 @@ const state = {
   apiCalls: 0,
   rateLimited: false,
   token: '',
+}
+
+// ⭐ 代理状态（只作用于音源检索）
+const proxyState = {
+  enabled: false,
+  url: '',
+}
+
+function setProxy(enabled, url) {
+  proxyState.enabled = enabled === true
+  proxyState.url = String(url || '').trim()
+}
+
+function getProxy() {
+  if (!proxyState.enabled || !proxyState.url) return null
+  try {
+    const u = new URL(proxyState.url)
+    const protocol = u.protocol.replace(':', '')
+    if (protocol !== 'http' && protocol !== 'https') return null
+    if (!u.hostname) return null
+    const port = u.port
+      ? parseInt(u.port, 10)
+      : (protocol === 'https' ? 443 : 80)
+    if (!port || Number.isNaN(port)) return null
+    return { host: u.hostname, port, protocol }
+  } catch (_) {
+    return null
+  }
+}
+
+function getAxiosConfig(extra = {}) {
+  const config = { ...extra }
+  const proxy = getProxy()
+  if (proxy) config.proxy = proxy
+  return config
 }
 
 function setToken(token) {
@@ -60,17 +96,32 @@ function apiHeaders() {
   return headers
 }
 
+// ⭐ 逐段编码路径，避免中文 / 空格 / 方括号
+function encodePath(filePath) {
+  return String(filePath).split('/').map(encodeURIComponent).join('/')
+}
+
+// ⭐ 生成 raw 地址（含编码）
+function repoRawUrl(fullName, branch, filePath) {
+  return `${RAW_HOST}/${fullName}/${encodeURIComponent(branch)}/${encodePath(filePath)}`
+}
+
+// ⭐ 生成 jsDelivr CDN 内容地址（含编码）
+function repoJsdelivrUrl(fullName, branch, filePath) {
+  return `${JSDELIVR_CDN}/${fullName}@${encodeURIComponent(branch)}/${encodePath(filePath)}`
+}
+
 async function fetchRepoTree(fullName, branch, timeout, onNotice) {
   // 1) GitHub API
   let apiErr = ''
   try {
     const url = `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(branch)}?recursive=1`
     state.apiCalls++
-    const res = await axios.get(url, {
+    const res = await axios.get(url, getAxiosConfig({
       headers: apiHeaders(),
       timeout: Math.max(3, timeout) * 1000,
       validateStatus: () => true,
-    })
+    }))
     if (res.status === 403 || res.status === 429) {
       state.rateLimited = true
       apiErr = `GitHub API 限流 HTTP ${res.status}`
@@ -88,14 +139,14 @@ async function fetchRepoTree(fullName, branch, timeout, onNotice) {
 
   if (onNotice) onNotice(`${apiErr}，尝试 jsDelivr 兜底`)
 
-  // 2) jsDelivr
+  // 2) jsDelivr 文件树
   try {
     const url = `https://data.jsdelivr.com/v1/packages/gh/${fullName}@${encodeURIComponent(branch)}?structure=flat`
-    const res = await axios.get(url, {
+    const res = await axios.get(url, getAxiosConfig({
       headers: { 'User-Agent': USER_AGENT },
       timeout: Math.max(5, timeout) * 1000,
       validateStatus: () => true,
-    })
+    }))
     if (res.status >= 200 && res.status < 300 && res.data && Array.isArray(res.data.files)) {
       const paths = []
       for (const item of res.data.files) {
@@ -135,14 +186,14 @@ async function fetchRepoPathsZip(fullName, branch, timeout, maxBytes = 80 * 1024
   for (const url of urls) {
     let tmpFile = ''
     try {
-      const res = await axios.get(url, {
+      const res = await axios.get(url, getAxiosConfig({
         headers: { 'User-Agent': USER_AGENT },
         responseType: 'arraybuffer',
         timeout: Math.max(15, timeout) * 1000,
         maxContentLength: maxBytes,
         maxBodyLength: maxBytes,
         validateStatus: () => true,
-      })
+      }))
       if (res.status < 200 || res.status >= 400) {
         lastErr = `HTTP ${res.status}`
         continue
@@ -190,8 +241,35 @@ async function listZipEntries(zipPath) {
   }
 }
 
-async function fetchScriptWithMirrors(rawUrl, timeout, maxMirrorTry) {
+// ⭐ 直接请求单个 URL（用于 jsDelivr CDN 优先）
+async function fetchScriptDirect(url, timeout) {
+  try {
+    const res = await axios.get(url, getAxiosConfig({
+      headers: { 'User-Agent': USER_AGENT, Accept: '*/*' },
+      responseType: 'text',
+      transformResponse: [(d) => d],
+      timeout: Math.max(3, timeout) * 1000,
+      validateStatus: () => true,
+      maxRedirects: 5,
+    }))
+    if (res.status < 200 || res.status >= 400) {
+      return { text: null, url: null, error: `HTTP ${res.status}` }
+    }
+    const text = typeof res.data === 'string' ? res.data : String(res.data || '')
+    if (!text) return { text: null, url: null, error: '空内容' }
+    return { text, url, error: null }
+  } catch (err) {
+    return { text: null, url: null, error: err.message || String(err) }
+  }
+}
+
+// ⭐ 改造：支持 fallbackUrls 插到最前面；记录最后一次错误
+async function fetchScriptWithMirrors(rawUrl, timeout, maxMirrorTry, fallbackUrls = []) {
   const list = []
+  // 优先 fallbackUrls（例如 jsDelivr CDN）
+  for (const u of fallbackUrls) {
+    if (u && !list.includes(u)) list.push(u)
+  }
   for (const prefix of MIRRORS) {
     const u = prefix ? prefix + rawUrl : rawUrl
     if (!list.includes(u)) list.push(u)
@@ -200,39 +278,46 @@ async function fetchScriptWithMirrors(rawUrl, timeout, maxMirrorTry) {
   const limit = maxMirrorTry && maxMirrorTry > 0 ? maxMirrorTry : list.length
   const tried = list.slice(0, limit)
 
+  let lastErr = '未尝试'
   for (const url of tried) {
     try {
-      const res = await axios.get(url, {
+      const res = await axios.get(url, getAxiosConfig({
         headers: { 'User-Agent': USER_AGENT, Accept: '*/*' },
         responseType: 'text',
         transformResponse: [(d) => d],
         timeout: Math.max(3, timeout) * 1000,
         validateStatus: () => true,
         maxRedirects: 5,
-      })
-      if (res.status < 200 || res.status >= 400) continue
+      }))
+      if (res.status < 200 || res.status >= 400) {
+        lastErr = `HTTP ${res.status}`
+        continue
+      }
       const text = typeof res.data === 'string' ? res.data : String(res.data || '')
-      if (!text) continue
+      if (!text) {
+        lastErr = '空内容'
+        continue
+      }
       return { text, url, error: null }
-    } catch (_) {
-      // 试下一个镜像
+    } catch (err) {
+      lastErr = err.message || String(err)
     }
   }
-  return { text: null, url: null, error: '所有镜像均抓取失败' }
-}
-
-function repoRawUrl(fullName, branch, filePath) {
-  return `${RAW_HOST}/${fullName}/${branch}/${filePath}`
+  return { text: null, url: null, error: `所有镜像均抓取失败（最后错误：${lastErr}）` }
 }
 
 module.exports = {
   MIRRORS,
   setToken,
   getToken,
+  setProxy,
+  getProxy,
   resetCounters,
   getApiCalls,
   isRateLimited,
   fetchRepoTree,
   fetchScriptWithMirrors,
+  fetchScriptDirect,
   repoRawUrl,
+  repoJsdelivrUrl,
 }
