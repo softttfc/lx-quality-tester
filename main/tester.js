@@ -2,6 +2,7 @@ const path = require('path')
 const axios = require('axios')
 const { spawn } = require('child_process')
 const { loadApiSource } = require('./apiLoader')
+const { asyncPool } = require('./concurrency')
 
 const QUALITY_RANK = [
   'master',
@@ -507,18 +508,46 @@ async function testSingleFile(scriptPath, song, options, onProgress) {
 }
 
 /**
- * ⭐ v2.2：
- *   - 每 10 个文件检查内存，超过 85% 主动 GC 并告警
- *   ⚠ 已移除进度事件节流（之前误伤了 file-progress，导致进度条永远 0%）
+ * ⭐ v2.3：文件级并发
+ *   - 每个文件独立沙箱，无共享状态，业务结果不变
+ *   - 新增 `file-start` 事件：仅更新 UI 文本，不改进度条
+ *   - `file-progress` 的 `current` 语义改为"已完成文件数"，进度条严格单调递增
+ *   - 内存检查改为"每完成 10 个文件触发一次"
  */
 async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
-  const results = []
   const opts = options || {}
   const MEM_WARN_RATIO = 0.85
+  const concurrency = Math.max(1, Math.min(opts.concurrency || 3, 8))
 
-  for (let i = 0; i < files.length; i++) {
-    // ⭐ 每 10 个文件检查内存
-    if (i > 0 && i % 10 === 0) {
+  let doneCount = 0
+
+  const results = await asyncPool(concurrency, files, async (f) => {
+    // ⭐ 通知 UI：开始处理（只更新文本，不改进度条）
+    onProgress({ type: 'file-start', file: f.name, total: files.length })
+
+    let r
+    try {
+      const filePath = f.path || path.join(sourcesDir, f)
+      r = await testSingleFile(filePath, song, opts, onProgress)
+    } catch (err) {
+      r = {
+        file: f.name,
+        error: (err && err.message) || String(err),
+        platforms: [],
+      }
+    }
+
+    // ⭐ 完成计数 + 上报（进度条在此更新）
+    doneCount++
+    onProgress({
+      type: 'file-progress',
+      current: doneCount,
+      total: files.length,
+      file: f.name,
+    })
+
+    // ⭐ 每完成 10 个文件检查一次内存
+    if (doneCount % 10 === 0) {
       try {
         const mu = process.memoryUsage()
         const ratio = mu.heapUsed / Math.max(mu.heapTotal, 1)
@@ -536,20 +565,8 @@ async function testApiSource({ sourcesDir, files, song, options, onProgress }) {
       } catch (_) {}
     }
 
-    const f = files[i]
-    onProgress({ type: 'file-progress', current: i + 1, total: files.length, file: f.name })
-    try {
-      const filePath = f.path || path.join(sourcesDir, f)
-      const r = await testSingleFile(filePath, song, opts, onProgress)
-      results.push(r)
-    } catch (err) {
-      results.push({
-        file: f.name,
-        error: (err && err.message) || String(err),
-        platforms: [],
-      })
-    }
-  }
+    return r
+  })
 
   const allQ = results.flatMap((r) => r.platforms.flatMap((p) => p.qualities))
   return {
