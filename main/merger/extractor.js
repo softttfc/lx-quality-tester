@@ -9,6 +9,11 @@ const { createLxSandbox } = require('../lxSandbox')
 const { analyzeRisks } = require('../apiLoader')
 
 // ═══════════════════════════════════════════════════════
+// ⭐ v2.5：脚本大小上限，超过则跳过 Babel 清理，避免 AST 内存爆炸
+// ═══════════════════════════════════════════════════════
+const MAX_BABEL_SIZE = 300 * 1024   // 300KB
+
+// ═══════════════════════════════════════════════════════
 // Layer 1：模式识别，删除装饰性的初始化请求
 // ═══════════════════════════════════════════════════════
 
@@ -45,9 +50,22 @@ function getCallChainRoot(node) {
   return cur
 }
 
+// ⭐ v2.5：主动 GC 辅助函数
+function tryGC() {
+  if (typeof global.gc === 'function') {
+    try { global.gc() } catch (_) {}
+  }
+}
+
 function stripDecorativeInitRequests(script) {
   const report = { changed: false, removed: 0, removedItems: [], error: null }
   if (typeof script !== 'string' || !script.trim()) {
+    return { code: script, report }
+  }
+
+  // ⭐ v2.5：超大脚本直接跳过，避免 AST 内存爆炸
+  if (script.length > MAX_BABEL_SIZE) {
+    report.error = `脚本超过 ${Math.round(MAX_BABEL_SIZE / 1024)}KB，跳过 Layer 1 清理`
     return { code: script, report }
   }
 
@@ -69,21 +87,31 @@ function stripDecorativeInitRequests(script) {
 
   const toRemove = []
 
-  traverse(ast, {
-    ExpressionStatement(path) {
-      const expr = path.node.expression
-      const root = getCallChainRoot(expr)
-      if (!root || !t.isIdentifier(root)) return
-      if (!isDecorativeFnName(root.name)) return
+  try {
+    traverse(ast, {
+      ExpressionStatement(path) {
+        const expr = path.node.expression
+        const root = getCallChainRoot(expr)
+        if (!root || !t.isIdentifier(root)) return
+        if (!isDecorativeFnName(root.name)) return
 
-      toRemove.push({
-        path,
-        name: root.name,
-      })
-    },
-  })
+        toRemove.push({
+          path,
+          name: root.name,
+        })
+      },
+    })
+  } catch (err) {
+    ast = null
+    tryGC()
+    report.error = `AST 遍历失败: ${err.message}`
+    return { code: script, report }
+  }
 
+  // ⭐ v2.5：无候选时提前释放 AST
   if (toRemove.length === 0) {
+    ast = null
+    tryGC()
     return { code: script, report }
   }
 
@@ -98,6 +126,8 @@ function stripDecorativeInitRequests(script) {
   }
 
   if (report.removed === 0) {
+    ast = null
+    tryGC()
     return { code: script, report }
   }
 
@@ -110,9 +140,15 @@ function stripDecorativeInitRequests(script) {
       jsescOption: { minimal: true },
     }, script).code
   } catch (err) {
+    ast = null
+    tryGC()
     report.error = `代码生成失败: ${err.message}`
     return { code: script, report }
   }
+
+  // ⭐ v2.5：AST 用完立即断开引用 + 主动 GC
+  ast = null
+  tryGC()
 
   report.changed = true
   return { code: output, report }
@@ -152,10 +188,10 @@ function buildSandbox(lx, timers) {
 
 /**
  * 在沙箱中执行代码并等待 inited
- * ⭐ 返回 cleanup 供调用方释放定时器
+ * ⭐ v2.5：返回 clearScriptInfo 供调用方释放 rawScript
  */
 async function runInSandbox(script, scriptPath) {
-  const { lx, handlers, getInitRequestLog, timers, cleanup } = createLxSandbox(
+  const { lx, handlers, getInitRequestLog, timers, cleanup, clearScriptInfo } = createLxSandbox(
     { rawScript: script },
     { logRequests: true }
   )
@@ -166,7 +202,13 @@ async function runInSandbox(script, scriptPath) {
     vm.createContext(sandbox)
     vm.runInContext(script, sandbox, { timeout: 30000, filename: scriptPath })
   } catch (err) {
-    return { handlers, getInitRequestLog, cleanup, error: `执行失败: ${err.message}` }
+    return {
+      handlers,
+      getInitRequestLog,
+      cleanup,
+      clearScriptInfo,
+      error: `执行失败: ${err.message}`,
+    }
   }
 
   const startTime = Date.now()
@@ -175,10 +217,16 @@ async function runInSandbox(script, scriptPath) {
   }
 
   if (!handlers.inited) {
-    return { handlers, getInitRequestLog, cleanup, error: '未触发 inited 事件' }
+    return {
+      handlers,
+      getInitRequestLog,
+      cleanup,
+      clearScriptInfo,
+      error: '未触发 inited 事件',
+    }
   }
 
-  return { handlers, getInitRequestLog, cleanup, error: null }
+  return { handlers, getInitRequestLog, cleanup, clearScriptInfo, error: null }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -233,6 +281,10 @@ async function extractSources(scriptPath) {
     if (typeof result.cleanup === 'function') {
       try { result.cleanup() } catch (_) {}
     }
+    if (typeof result.clearScriptInfo === 'function') {
+      try { result.clearScriptInfo() } catch (_) {}
+    }
+    tryGC()
     console.warn(
       `[extractor] Layer 1 清理后代码执行失败，回退到原始代码: ${result.error}`
     )
@@ -246,7 +298,7 @@ async function extractSources(scriptPath) {
     }
   }
 
-  // ⭐ 所有 return 都走 finally，确保沙箱被释放
+  // ⭐ 所有 return 都走 finally，确保沙箱被释放 + 脚本副本被清空 + 主动 GC
   try {
     if (result.error) {
       return {
@@ -286,9 +338,14 @@ async function extractSources(scriptPath) {
       cleanReport,
     }
   } finally {
+    // ⭐ v2.5：统一释放沙箱资源
     if (typeof result.cleanup === 'function') {
       try { result.cleanup() } catch (_) {}
     }
+    if (typeof result.clearScriptInfo === 'function') {
+      try { result.clearScriptInfo() } catch (_) {}   // 清空 rawScript
+    }
+    tryGC()
   }
 }
 
