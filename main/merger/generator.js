@@ -2,6 +2,8 @@
  * 生成合并后的音源文件
  * @version 1.8.0
  * @changelog
+ *   v2.5.0:
+ *     - [1] findSharedHosts 支持从 file.path 读取 content（配合 analyzeSources 不再返回 content）
  *   v1.8.0:
  *     - [1] 评分公式改为 rate*0.45 + smoothedContrib*0.35 + speed*0.12 + order*0.08
  *     - [2] 引入平滑贡献率 smoothedContrib = (contributions + 1) / (calls + 10)
@@ -19,6 +21,9 @@
  *     - [3] 黑名单模式 blockedHosts 为空时自动降级为 'none'
  *     - [4] modeLabel 支持三种模式
  */
+
+// ⭐ v2.5：findSharedHosts 需要从 file.path 读取 content
+const fs = require('fs')
 
 const {
   PROTECTED_SUFFIXES,
@@ -97,14 +102,27 @@ function extractHosts(script) {
   return hosts
 }
 
+// ⭐ v2.5：支持从 file.path 读取 content
 function findSharedHosts(files, selection) {
   const hostToFileIdxs = new Map()
   for (const [idxStr, platforms] of Object.entries(selection || {})) {
     if (!Array.isArray(platforms) || platforms.length === 0) continue
     const idx = Number(idxStr)
     const file = files[idx]
-    if (!file || !file.content) continue
-    const hosts = extractHosts(file.content)
+    if (!file) continue
+
+    // ⭐ v2.5：content 优先；没有就从 path 读
+    let content = file.content
+    if (!content && file.path) {
+      try {
+        content = fs.readFileSync(file.path, 'utf8')
+      } catch (_) {
+        continue
+      }
+    }
+    if (!content) continue
+
+    const hosts = extractHosts(content)
     for (const h of hosts) {
       if (!hostToFileIdxs.has(h)) hostToFileIdxs.set(h, new Set())
       hostToFileIdxs.get(h).add(idx)
