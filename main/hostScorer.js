@@ -24,6 +24,7 @@
 
 const path = require('path')
 const { loadApiSource } = require('./apiLoader')
+const { asyncPool } = require('./discover/concurrency')
 
 // ═══════════════════════════════════════════════════════
 // 媒体域名判断
@@ -90,6 +91,7 @@ function buildMusicInfo(song, platform) {
 
 /**
  * 单次运行
+ * ⭐ 每个组合独立创建全新沙箱，不缓存、不复用（业务结果不变的保证）
  */
 async function runOnceForShadow(scriptPath, song, platform, quality, timeout, blockedHosts) {
   const loadOptions = {
@@ -347,7 +349,10 @@ async function preloadDeclaredSources(files, onProgress) {
 }
 
 // ═══════════════════════════════════════════════════════
-// P10：单轮影子测试，黑名单按 (file, platform) 维度
+// P10 + v2.3：单轮影子测试，黑名单按 (file, platform) 维度
+//   ⭐ v2.3：三层嵌套 for 拍平为任务列表，用 asyncPool 并发执行
+//   ⭐ 业务结果不变的保证：每个组合仍调用 runOnceForShadow，
+//      内部独立 loadApiSource 创建全新沙箱，不缓存、不复用
 // ═══════════════════════════════════════════════════════
 
 /**
@@ -363,6 +368,7 @@ async function runShadowTestSingleRound(
 ) {
   const timeout = options.timeout || 15000
   const platforms = options.platforms || ['kw', 'kg', 'tx', 'wy', 'mg']
+  const concurrency = Math.max(1, Math.min(options.concurrency || 3, 8))
 
   const isMap = blockedHostsByKey instanceof Map
 
@@ -400,6 +406,10 @@ async function runShadowTestSingleRound(
   const totalRuns = files.length * platforms.length * songs.length
   let doneRuns = 0
 
+  // ═══════════════════════════════════════════════════════
+  // 阶段 1：串行解析 declaredSources（只在开头一次，无并发）
+  // ═══════════════════════════════════════════════════════
+  const fileInfos = []
   for (let fi = 0; fi < files.length; fi++) {
     const file = files[fi]
     const scriptPath = file.path || file
@@ -424,10 +434,26 @@ async function runShadowTestSingleRound(
       }
     }
 
+    fileInfos.push({ file, scriptPath, declaredSources, firstError })
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 阶段 2：拍平任务列表
+  //   - type='file-error'：文件加载失败，跳过该文件所有组合
+  //   - type='run'：正常组合
+  //   - type='skip'：未声明平台的批量跳过
+  // ═══════════════════════════════════════════════════════
+  const tasks = []
+  for (const info of fileInfos) {
+    const { file, scriptPath, declaredSources, firstError } = info
+
     if (firstError) {
-      onProgress({ type: 'shadow-file-error', file: file.name, error: firstError })
-      doneRuns += platforms.length * songs.length
-      onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
+      tasks.push({
+        type: 'file-error',
+        file,
+        error: firstError,
+        skipCount: platforms.length * songs.length,
+      })
       continue
     }
 
@@ -437,78 +463,110 @@ async function runShadowTestSingleRound(
       const declared = declaredSources[platform]
       const qualitys = declared.qualitys || []
       const testQuality = qualitys[0] || '320k'
-
       const blockedArr = getBlockedFor(file.name, platform)
 
       for (let si = 0; si < songs.length; si++) {
-        const song = songs[si]
-        onProgress({
-          type: 'shadow-run',
-          file: file.name,
+        tasks.push({
+          type: 'run',
+          file,
+          scriptPath,
           platform,
-          song: song.name,
-          current: si + 1,
-          songTotal: songs.length,
-          done: doneRuns,
-          total: totalRuns,
+          testQuality,
+          song: songs[si],
+          songIndex: si,
+          blockedArr,
         })
-
-        const run = await runOnceForShadow(
-          scriptPath, song, platform, testQuality, timeout, blockedArr
-        )
-
-        if (run.requestLog && run.requestLog.length > 0) {
-          const platformScope = ensureFilePlatform(file.name, platform)
-          for (const entry of run.requestLog) {
-            if (!entry.host) continue
-            if (isMediaHost(entry.host)) continue
-
-            const g = ensureRawHost(rawStats.global, entry.host)
-            const f = ensureRawHost(platformScope, entry.host)
-
-            for (const h of [g, f]) {
-              h.calls++
-              if (entry.status === 'ok') h.ok++
-              else if (entry.status === 'fail') h.fail++
-              else if (entry.status === 'blocked') h.blocked++
-              else if (entry.status === 'http-error') h.httpError++
-              if (typeof entry.duration === 'number' && entry.duration > 0) {
-                h.totalMs += entry.duration
-                h.durationCount++
-              }
-              if (typeof entry.sequence === 'number' && entry.sequence > 0) {
-                h.orderSum += entry.sequence
-                h.orderCount++
-              }
-            }
-          }
-        }
-
-        if (run.url) {
-          const contributors = findContributors(run)
-          const platformScope = ensureFilePlatform(file.name, platform)
-          for (const host of contributors) {
-            const g = ensureRawHost(rawStats.global, host)
-            const f = ensureRawHost(platformScope, host)
-            g.contributions++
-            f.contributions++
-            if (!isBlocked(file.name, platform, host)) {
-              newSuccessHosts.push({ file: file.name, platform, host })
-            }
-          }
-        }
-
-        doneRuns++
-        onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
       }
     }
 
-    const skipped = platforms.length * songs.length - toTest.length * songs.length
+    const skipped = (platforms.length - toTest.length) * songs.length
     if (skipped > 0) {
-      doneRuns += skipped
-      onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
+      tasks.push({ type: 'skip', skipCount: skipped })
     }
   }
+
+  // ═══════════════════════════════════════════════════════
+  // 阶段 3：并发执行
+  //   - 统计逻辑与原串行版本完全一致（加法，与顺序无关）
+  //   - doneRuns 只在任务完成时递增，保证进度条严格单调递增
+  // ═══════════════════════════════════════════════════════
+  await asyncPool(concurrency, tasks, async (task) => {
+    // ── 处理 file-error ──
+    if (task.type === 'file-error') {
+      onProgress({ type: 'shadow-file-error', file: task.file.name, error: task.error })
+      doneRuns += task.skipCount
+      onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
+      return
+    }
+
+    // ── 处理 skip ──
+    if (task.type === 'skip') {
+      doneRuns += task.skipCount
+      onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
+      return
+    }
+
+    // ── 处理 run ──
+    onProgress({
+      type: 'shadow-run',
+      file: task.file.name,
+      platform: task.platform,
+      song: task.song.name,
+      current: task.songIndex + 1,
+      songTotal: songs.length,
+      done: doneRuns,
+      total: totalRuns,
+    })
+
+    const run = await runOnceForShadow(
+      task.scriptPath, task.song, task.platform, task.testQuality,
+      timeout, task.blockedArr
+    )
+
+    if (run.requestLog && run.requestLog.length > 0) {
+      const platformScope = ensureFilePlatform(task.file.name, task.platform)
+      for (const entry of run.requestLog) {
+        if (!entry.host) continue
+        if (isMediaHost(entry.host)) continue
+
+        const g = ensureRawHost(rawStats.global, entry.host)
+        const f = ensureRawHost(platformScope, entry.host)
+
+        for (const h of [g, f]) {
+          h.calls++
+          if (entry.status === 'ok') h.ok++
+          else if (entry.status === 'fail') h.fail++
+          else if (entry.status === 'blocked') h.blocked++
+          else if (entry.status === 'http-error') h.httpError++
+          if (typeof entry.duration === 'number' && entry.duration > 0) {
+            h.totalMs += entry.duration
+            h.durationCount++
+          }
+          if (typeof entry.sequence === 'number' && entry.sequence > 0) {
+            h.orderSum += entry.sequence
+            h.orderCount++
+          }
+        }
+      }
+    }
+
+    if (run.url) {
+      const contributors = findContributors(run)
+      const platformScope = ensureFilePlatform(task.file.name, task.platform)
+      for (const host of contributors) {
+        const g = ensureRawHost(rawStats.global, host)
+        const f = ensureRawHost(platformScope, host)
+        g.contributions++
+        f.contributions++
+        if (!isBlocked(task.file.name, task.platform, host)) {
+          newSuccessHosts.push({ file: task.file.name, platform: task.platform, host })
+        }
+      }
+    }
+
+    doneRuns++
+    onProgress({ type: 'shadow-progress', done: doneRuns, total: totalRuns })
+  })
 
   return { rawStats, newSuccessHosts }
 }
