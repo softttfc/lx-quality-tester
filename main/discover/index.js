@@ -40,9 +40,20 @@ async function scan(params, onProgress) {
   if (params.token) githubClient.setToken(params.token)
   else githubClient.setToken('')
 
+  // ⭐ 读取代理配置：params 优先，其次保存的 config
+  const cfg = loadConfig()
+  const proxyEnabled = params.proxyEnabled !== undefined
+    ? params.proxyEnabled === true
+    : cfg.proxyEnabled === true
+  const proxyUrl = params.proxyUrl !== undefined
+    ? String(params.proxyUrl || '').trim()
+    : cfg.proxyUrl
+
+  githubClient.setProxy(proxyEnabled, proxyUrl)
+
   const repos = Array.isArray(params.repos) && params.repos.length
     ? reposStore.normalizeRepos(params.repos)
-    : loadConfig().repos
+    : cfg.repos
 
   const options = {
     repoWorkers: clampInt(params.repoWorkers, 1, 32, 6),
@@ -52,6 +63,21 @@ async function scan(params, onProgress) {
   }
 
   onProgress && onProgress({ type: 'scan-start', repos: repos.length, options })
+
+  // ⭐ 代理提示
+  if (proxyEnabled && proxyUrl) {
+    onProgress && onProgress({
+      type: 'notice',
+      repo: '',
+      message: `[代理] 已启用：${proxyUrl}（仅音源检索，不影响音源质量测试）`,
+    })
+  } else {
+    onProgress && onProgress({
+      type: 'notice',
+      repo: '',
+      message: '[代理] 未启用，Node.js 直连（如遇失败请在侧栏开启代理）',
+    })
+  }
 
   const { records, messages } = await scanner.scanRepos(repos, options, onProgress, stopFlag)
 
