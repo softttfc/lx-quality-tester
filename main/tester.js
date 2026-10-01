@@ -2,7 +2,7 @@ const path = require('path')
 const axios = require('axios')
 const { spawn } = require('child_process')
 const { loadApiSource } = require('./apiLoader')
-const { asyncPool } = require('./concurrency')
+const { asyncPool } = require('./discover/concurrency')
 
 const QUALITY_RANK = [
   'master',
