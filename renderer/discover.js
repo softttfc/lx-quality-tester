@@ -108,6 +108,22 @@
     </div>
 
     <div class="disc-panel">
+      <label>网络代理（仅音源检索）</label>
+      <label class="checkbox" style="font-size:12px">
+        <input type="checkbox" id="discProxyEnabled">
+        使用代理访问 GitHub API / raw / jsDelivr
+      </label>
+      <div class="disc-row">
+        <input id="discProxyUrl" placeholder="http://127.0.0.1:7897" disabled>
+      </div>
+      <div class="disc-hint" style="line-height:1.6">
+        格式：<code>http://主机:端口</code>，例如 <code>http://127.0.0.1:7897</code>。<br>
+        只作用于「音源检索」标签页的 GitHub API、raw 文件下载和 jsDelivr 请求；<br>
+        <b>不影响「音源质量测试」标签页</b>。支持 HTTP / HTTPS，不支持 SOCKS。
+      </div>
+    </div>
+
+    <div class="disc-panel">
       <label>下载</label>
       <div class="disc-row">
         <input id="discDownloadDir" placeholder="下载目录">
@@ -207,6 +223,9 @@
       fileWorkers: parseInt($('discFileWorkers').value, 10) || 8,
       limit: parseInt($('discLimit').value, 10) || 40,
       timeout: parseFloat($('discTimeout').value) || 8,
+      // ⭐ 代理配置
+      proxyEnabled: $('discProxyEnabled') ? $('discProxyEnabled').checked : false,
+      proxyUrl: $('discProxyUrl') ? $('discProxyUrl').value.trim() : '',
     }
   }
 
@@ -324,6 +343,9 @@
       limit: parseInt($('discLimit').value, 10) || 40,
       timeout: parseFloat($('discTimeout').value) || 8,
       noDedupe,
+      // ⭐ 代理参数
+      proxyEnabled: $('discProxyEnabled').checked,
+      proxyUrl: $('discProxyUrl').value.trim(),
     }
 
     scanning = true
@@ -339,7 +361,8 @@
       else if (p.type === 'repo-start') log('info', `>>> 扫描仓库 ${p.repo} (${p.branch})`)
       else if (p.type === 'repo-tree') log('info', `[${p.repo}] 文件树 ${p.totalFiles} 项，候选 ${p.candidates} 个`)
       else if (p.type === 'file-progress') {
-        if (p.status === 'fail') log('error', `  x ${p.repo}/${p.path}`)
+        // ⭐ 带上具体 error
+        if (p.status === 'fail') log('error', `  x ${p.repo}/${p.path}：${p.error || ''}`)
       } else if (p.type === 'notice') log('warn', `  · ${p.message}`)
       else if (p.type === 'repo-error') log('error', `  x ${p.repo}: ${p.error}`)
       else if (p.type === 'repo-done') log('info', `[${p.repo}] 完成，共 ${p.count} 条`)
@@ -576,6 +599,10 @@
       $('discFileWorkers').value = cfg.fileWorkers || 8
       $('discLimit').value = cfg.limit || 40
       $('discTimeout').value = cfg.timeout || 8
+      // ⭐ 代理配置填充
+      $('discProxyEnabled').checked = cfg.proxyEnabled === true
+      $('discProxyUrl').value = cfg.proxyUrl || ''
+      $('discProxyUrl').disabled = !$('discProxyEnabled').checked
       renderRepoList()
     } catch (err) {
       console.error('[discover] 初始化失败', err)
@@ -630,7 +657,13 @@
       } catch (_) {}
     })
 
-    for (const id of ['discDownloadDir', 'discRepoWorkers', 'discFileWorkers', 'discLimit', 'discTimeout']) {
+    // ⭐ 代理开关联动
+    $('discProxyEnabled').addEventListener('change', () => {
+      $('discProxyUrl').disabled = !$('discProxyEnabled').checked
+      persistConfig()
+    })
+
+    for (const id of ['discDownloadDir', 'discRepoWorkers', 'discFileWorkers', 'discLimit', 'discTimeout', 'discProxyUrl']) {
       const el = $(id)
       if (el) el.addEventListener('change', persistConfig)
     }
@@ -640,6 +673,7 @@
     setStatus('就绪。添加候选仓库后点击“扫描仓库”。')
     log('info', '检索标签页已就绪。状态列只会出现「已扫描 / 抓取失败」。')
     log('info', '明文列为静态正则判读结果，仅供参考，不代表安全性。')
+    log('info', '若需访问 GitHub，可在「网络代理」中勾选并填写 http://127.0.0.1:7897（只作用于本标签页）。')
   }
 
   window.initDiscoverTab = init
