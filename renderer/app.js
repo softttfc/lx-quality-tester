@@ -20,6 +20,9 @@ let sharedHintTimer = null
 // ⭐ v2.3：文件级并发度（1–8，默认 3）
 const FILE_CONCURRENCY = 3
 
+// ⭐ A 方案：results 容器事件委托是否已绑定（只绑一次）
+let resultEventsBound = false
+
 /* ═════════ 目录选择 ═════════ */
 $('btnSelectDir').addEventListener('click', async () => {
   const dir = await window.api.selectSourcesDir()
@@ -462,16 +465,7 @@ function renderBackendPanelsStandalone(results) {
 
   if (!cardsHtml) return
   container.innerHTML = cardsHtml
-
-  container.querySelectorAll('.api-header').forEach((h) => {
-    h.addEventListener('click', () => {
-      const body = h.parentElement.querySelector('.api-body')
-      const icon = h.querySelector('.icon')
-      const hidden = body.style.display === 'none'
-      body.style.display = hidden ? 'block' : 'none'
-      icon.textContent = hidden ? '▼' : '▶'
-    })
-  })
+  // ⭐ A 方案：.api-header 点击由 bindResultEventsOnce 的事件委托处理
 }
 
 function bindBackendPanelEvents() {
@@ -961,16 +955,7 @@ function renderShadowPanelsStandalone(hostScores) {
 
   if (!cardsHtml) return
   container.innerHTML = cardsHtml
-
-  container.querySelectorAll('.api-header').forEach((h) => {
-    h.addEventListener('click', () => {
-      const body = h.parentElement.querySelector('.api-body')
-      const icon = h.querySelector('.icon')
-      const hidden = body.style.display === 'none'
-      body.style.display = hidden ? 'block' : 'none'
-      icon.textContent = hidden ? '▼' : '▶'
-    })
-  })
+  // ⭐ A 方案：.api-header 点击由 bindResultEventsOnce 的事件委托处理
 }
 
 function renderShadowPlatform(file, platform, hosts) {
@@ -1428,6 +1413,88 @@ function renderProgress(p) {
   }
 }
 
+/* ⭐ A 方案：事件委托，只绑定一次
+ *   - 处理 .api-header 展开/收起
+ *   - 处理 .toggle-table 表格展开（懒渲染）
+ *   - 处理 .merge-checkbox 勾选变化
+ */
+function bindResultEventsOnce() {
+  if (resultEventsBound) return
+  const resultsEl = $('results')
+  if (!resultsEl) return
+  resultEventsBound = true
+
+  // ── 点击事件委托 ──
+  resultsEl.addEventListener('click', (e) => {
+    // 1. 平台表格展开/收起（懒渲染）
+    const toggle = e.target.closest('.toggle-table')
+    if (toggle) {
+      e.preventDefault()
+      handleToggleTable(toggle)
+      return
+    }
+
+    // 2. 卡片头展开/收起
+    const header = e.target.closest('.api-header')
+    if (header) {
+      const body = header.parentElement.querySelector('.api-body')
+      const icon = header.querySelector('.icon')
+      if (body && icon) {
+        const hidden = body.style.display === 'none'
+        body.style.display = hidden ? 'block' : 'none'
+        icon.textContent = hidden ? '▼' : '▶'
+      }
+      return
+    }
+  })
+
+  // ── change 事件委托（merge-checkbox） ──
+  resultsEl.addEventListener('change', (e) => {
+    const cb = e.target
+    if (cb && cb.classList && cb.classList.contains('merge-checkbox')) {
+      updateMergeButtonState()
+      scheduleSharedHint()
+    }
+  })
+}
+
+/* ⭐ A 方案：处理表格展开/收起
+ *   - 首次点击：从 lastReport 取数据渲染
+ *   - 再次点击：切换显示/隐藏
+ */
+function handleToggleTable(toggle) {
+  const platformDiv = toggle.closest('.platform')
+  if (!platformDiv) return
+  const container = platformDiv.querySelector('.quality-table-container')
+  if (!container) return
+
+  const file = container.dataset.file
+  const platform = container.dataset.platform
+  if (!file || !platform || !lastReport) return
+
+  // 已渲染过：切换显示
+  if (container.dataset.rendered === 'true') {
+    const table = container.querySelector('table')
+    if (table) {
+      const hidden = table.style.display === 'none'
+      table.style.display = hidden ? '' : 'none'
+      const rowCount = table.querySelectorAll('tbody tr').length
+      toggle.textContent = hidden ? '收起' : `展开 ${rowCount} 行`
+    }
+    return
+  }
+
+  // 首次渲染：从 lastReport 取数据
+  const api = lastReport.results.find((r) => r.file === file)
+  if (!api) return
+  const p = api.platforms.find((x) => x.source === platform)
+  if (!p) return
+
+  container.innerHTML = renderQualityTable(p)
+  container.dataset.rendered = 'true'
+  toggle.textContent = '收起'
+}
+
 function renderResult(report) {
   const { summary, results } = report
   $('summary').style.display = 'grid'
@@ -1439,24 +1506,12 @@ function renderResult(report) {
     <div class="summary-item"><div class="num">${summary.downgradedQualities || 0}</div><div class="label">降级音质</div></div>
     <div class="summary-item"><div class="num">${summary.unplayableQualities || 0}</div><div class="label">不可播放</div></div>
   `
+
+  // ⭐ A 方案：表格不再一次性渲染，改为点击展开
   $('results').innerHTML = results.map(renderApiCard).join('')
 
-  document.querySelectorAll('.api-header').forEach((h) => {
-    h.addEventListener('click', () => {
-      const body = h.parentElement.querySelector('.api-body')
-      const icon = h.querySelector('.icon')
-      const hidden = body.style.display === 'none'
-      body.style.display = hidden ? 'block' : 'none'
-      icon.textContent = hidden ? '▼' : '▶'
-    })
-  })
-
-  document.querySelectorAll('.merge-checkbox').forEach((cb) => {
-    cb.addEventListener('change', () => {
-      updateMergeButtonState()
-      scheduleSharedHint()
-    })
-  })
+  // ⭐ A 方案：事件委托只绑定一次（绑定在 #results 容器上，永久有效）
+  bindResultEventsOnce()
 
   updateRiskSummary()
   applyAllFilters()
@@ -1524,8 +1579,47 @@ function renderApiCard(api) {
     </div>`
 }
 
+/* ⭐ A 方案：平台卡片不再直接生成表格
+ *   - 只显示平台名 + 统计数字 + "展开 N 行"链接
+ *   - 表格内容等用户点击后再生成（懒渲染）
+ */
 function renderPlatform(p, apiFile) {
-  const rows = p.qualities.map((q) => {
+  const downgradeText = p.downgradedCount ? `降级: <span class="status-warn">${p.downgradedCount}</span> ` : ''
+  const unplayableText = p.unplayableCount ? `不可播: <span class="status-fail">${p.unplayableCount}</span> ` : ''
+  const rowCount = (p.qualities || []).length
+
+  return `
+    <div class="platform">
+      <div class="platform-header">
+        <div class="platform-name">
+          <input type="checkbox"
+                 class="merge-checkbox"
+                 data-file="${escapeHtml(apiFile)}"
+                 data-source="${escapeHtml(p.source)}"
+                 ${p.available ? 'checked' : ''}>
+          ${p.available ? '✅' : '❌'} ${escapeHtml(p.name)} (${escapeHtml(p.source)})
+          ${p.bestQuality ? `<span class="best-tag">实际最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
+        </div>
+        <div class="platform-stats">
+          通过: <span class="status-ok">${p.passedCount}</span> ${downgradeText}${unplayableText}/ 错误: <span class="status-fail">${p.failedCount}</span>
+          <a href="javascript:void(0)"
+             class="toggle-table"
+             data-file="${escapeHtml(apiFile)}"
+             data-platform="${escapeHtml(p.source)}">展开 ${rowCount} 行</a>
+        </div>
+      </div>
+      <div class="quality-table-container"
+           data-file="${escapeHtml(apiFile)}"
+           data-platform="${escapeHtml(p.source)}"
+           data-rendered="false"></div>
+    </div>`
+}
+
+/* ⭐ A 方案：懒渲染表格内容
+ *   只在用户点击"展开"时才调用
+ */
+function renderQualityTable(p) {
+  const rows = (p.qualities || []).map((q) => {
     let actualCell
     if (!q.urlAccessible) {
       actualCell = '<span class="status-fail">—</span>'
@@ -1563,32 +1657,13 @@ function renderPlatform(p, apiFile) {
     </tr>`
   }).join('')
 
-  const downgradeText = p.downgradedCount ? `降级: <span class="status-warn">${p.downgradedCount}</span> ` : ''
-  const unplayableText = p.unplayableCount ? `不可播: <span class="status-fail">${p.unplayableCount}</span> ` : ''
-
   return `
-    <div class="platform">
-      <div class="platform-header">
-        <div class="platform-name">
-          <input type="checkbox"
-                 class="merge-checkbox"
-                 data-file="${escapeHtml(apiFile)}"
-                 data-source="${escapeHtml(p.source)}"
-                 ${p.available ? 'checked' : ''}>
-          ${p.available ? '✅' : '❌'} ${escapeHtml(p.name)} (${escapeHtml(p.source)})
-          ${p.bestQuality ? `<span class="best-tag">实际最高音质: ${escapeHtml(p.bestQuality)}</span>` : ''}
-        </div>
-        <div class="platform-stats">
-          通过: <span class="status-ok">${p.passedCount}</span> ${downgradeText}${unplayableText}/ 错误: <span class="status-fail">${p.failedCount}</span>
-        </div>
-      </div>
-      <table class="quality-table">
-        <thead>
-          <tr><th>请求音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>可播</th><th>实际音质</th><th>耗时</th><th>URL / 错误</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`
+    <table class="quality-table">
+      <thead>
+        <tr><th>请求音质</th><th>声明</th><th>获取URL</th><th>可访问</th><th>可播</th><th>实际音质</th><th>耗时</th><th>URL / 错误</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`
 }
 
 function findCardByFile(file) {
@@ -1600,9 +1675,12 @@ function findCardByFile(file) {
   }) || null
 }
 
+// ⭐ A 方案：加快速路径，无特殊字符直接返回
 function escapeHtml(s) {
   if (s == null) return ''
-  return String(s)
+  const str = String(s)
+  if (!/[&<>"']/.test(str)) return str
+  return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
