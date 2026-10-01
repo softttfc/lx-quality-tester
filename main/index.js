@@ -4,7 +4,7 @@ const fs = require('fs')
 
 // ═══════════════════════════════════════════════════════
 // ⭐ v2.2：V8 堆上限 + 暴露 gc
-//   - max-old-space-size=2048：把 OOM 提前到 2GB，避免涨到 4GB 才崩
+//   - max-old-space-size=4096：把 OOM 提前到 4GB，避免涨到更大才崩
 //   - expose-gc：允许测试循环里手动 global.gc() 回收
 //   ⚠ 必须在 app.whenReady() 之前调用
 // ═══════════════════════════════════════════════════════
@@ -64,7 +64,28 @@ function createWindow() {
   })
 }
 
-app.whenReady().then(createWindow)
+// ⭐ v2.5：启动打印 V8 堆上限，验证 --max-old-space-size 是否生效
+app.whenReady().then(() => {
+  try {
+    const v8 = require('v8')
+    const heap = v8.getHeapStatistics()
+    console.log('[main] heap_size_limit =',
+      (heap.heap_size_limit / 1048576).toFixed(0), 'MB')
+  } catch (_) {}
+
+  // ⭐ v2.5：主进程内存定期日志（超 500MB 才打印，避免刷屏）
+  setInterval(() => {
+    try {
+      const mu = process.memoryUsage()
+      const heapMB = mu.heapUsed / 1048576
+      if (heapMB > 500) {
+        console.warn(`[main] heapUsed=${heapMB.toFixed(0)}MB rss=${(mu.rss / 1048576).toFixed(0)}MB`)
+      }
+    } catch (_) {}
+  }, 5000)
+
+  createWindow()
+})
 
 // ⭐ v2.2：Chromium 子进程 / 渲染进程崩溃日志
 app.on('render-process-gone', (event, wc, details) => {
@@ -141,9 +162,23 @@ ipcMain.handle('save-report', async (event, content) => {
   return { ok: false }
 })
 
+// ⭐ v2.5：analyze-sources 增加数据大小保护
 ipcMain.handle('analyze-sources', async (event, files) => {
   try {
-    return await analyzeSources(files)
+    const r = await analyzeSources(files)
+    // ⭐ 检查序列化大小，超过 5MB 拒绝传输
+    let json
+    try {
+      json = JSON.stringify(r)
+    } catch (err) {
+      return { error: `分析结果序列化失败: ${err.message || err}` }
+    }
+    if (json.length > 5 * 1024 * 1024) {
+      return {
+        error: `分析数据过大（${(json.length / 1048576).toFixed(1)}MB），已拒绝传输`,
+      }
+    }
+    return r
   } catch (err) {
     return { error: err.message || String(err) }
   }
@@ -165,14 +200,12 @@ ipcMain.handle('test-backends', async (event, { files, song, options }) => {
     let doneCount = 0
 
     const results = await asyncPool(concurrency, files, async (f) => {
-      // ⭐ 通知 UI：开始处理（只更新文本，不改进度条）
       send({ type: 'file-start', file: f.name, total: files.length })
 
       const r = await testBackends(f.path, song, opts, (p) => {
         send(p)
       })
 
-      // ⭐ 完成计数 + 上报（进度条在此更新）
       doneCount++
       send({
         type: 'file-progress',
