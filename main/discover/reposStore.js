@@ -105,6 +105,9 @@ function loadConfig() {
     fileWorkers: clampInt(data.fileWorkers, 1, 32, 8),
     limit: clampInt(data.limit, 1, 200, 40),
     timeout: clampNum(data.timeout, 3, 180, 8),
+    // ⭐ 代理配置
+    proxyEnabled: data.proxyEnabled === true,
+    proxyUrl: String(data.proxyUrl || '').trim(),
   }
 }
 
@@ -116,6 +119,9 @@ function saveConfig(config) {
     fileWorkers: clampInt(config.fileWorkers, 1, 32, 8),
     limit: clampInt(config.limit, 1, 200, 40),
     timeout: clampNum(config.timeout, 3, 180, 8),
+    // ⭐ 代理配置
+    proxyEnabled: config.proxyEnabled === true,
+    proxyUrl: String(config.proxyUrl || '').trim(),
   }
   const file = configFile()
   fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf-8')
