@@ -761,6 +761,7 @@ $('btnRunShadowTest').addEventListener('click', async () => {
         timeout: 15000,
         fullCoverage,
         maxRounds: 10,
+        concurrency: FILE_CONCURRENCY,   // ⭐ v2.3：单轮内组合级并发度
       },
     })
 
