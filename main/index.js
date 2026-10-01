@@ -39,6 +39,7 @@ const { searchAllPlatforms } = require('./searchService')
 const { analyzeSources, mergeSources } = require('./merger')
 const { testBackends } = require('./backendTester')
 const { runShadowTest } = require('./hostScorer')
+const { asyncPool } = require('./concurrency')
 const discover = require('./discover')
 
 let mainWindow = null
@@ -149,26 +150,40 @@ ipcMain.handle('analyze-sources', async (event, files) => {
 })
 
 // ⭐ v1.6：后端检测
+// ⭐ v2.3：文件级并发（每个文件独立 testBackends 沙箱，业务结果不变）
 ipcMain.handle('test-backends', async (event, { files, song, options }) => {
   try {
-    const results = []
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i]
+    const opts = options || {}
+    const concurrency = Math.max(1, Math.min(opts.concurrency || 3, 8))
+
+    const send = (p) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('backend-progress', {
-          type: 'file-progress',
-          current: i + 1,
-          total: files.length,
-          file: f.name,
-        })
+        mainWindow.webContents.send('backend-progress', p)
       }
-      const r = await testBackends(f.path, song, options || {}, (p) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('backend-progress', p)
-        }
-      })
-      results.push(r)
     }
+
+    let doneCount = 0
+
+    const results = await asyncPool(concurrency, files, async (f) => {
+      // ⭐ 通知 UI：开始处理（只更新文本，不改进度条）
+      send({ type: 'file-start', file: f.name, total: files.length })
+
+      const r = await testBackends(f.path, song, opts, (p) => {
+        send(p)
+      })
+
+      // ⭐ 完成计数 + 上报（进度条在此更新）
+      doneCount++
+      send({
+        type: 'file-progress',
+        current: doneCount,
+        total: files.length,
+        file: f.name,
+      })
+
+      return r
+    })
+
     return { ok: true, results }
   } catch (err) {
     return { ok: false, error: err.message || String(err) }
