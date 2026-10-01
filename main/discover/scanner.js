@@ -110,9 +110,6 @@ function sha256(text) {
   return crypto.createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
-/**
- * ⭐ 本次新增：安全调用 detectPlainSource，异常时返回兜底结构
- */
 function safeDetectPlain(text) {
   try {
     return detectPlainSource(text)
@@ -163,6 +160,9 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
     return { full_name: fullName, branch, records: [], error: '未发现候选音源脚本' }
   }
 
+  // ⭐ 目录树来自 jsDelivr → 文件内容优先走 jsDelivr CDN
+  const preferJsdelivr = treeResult.source === 'jsdelivr'
+
   const records = []
   let done = 0
   const tasks = candidates.map((p) => ({ path: p }))
@@ -170,14 +170,31 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
   await asyncPool(fileWorkers, tasks, async (task) => {
     if (stopFlag && stopFlag.cancelled) return null
     const p = task.path
-    const rawUrl = githubClient.repoRawUrl(fullName, branch, p)
+
     let res
     try {
-      res = await githubClient.fetchScriptWithMirrors(rawUrl, timeout, 4)
+      if (preferJsdelivr) {
+        // ⭐ 目录树来自 jsDelivr，直接用 CDN 下文件
+        const jsdelivrUrl = githubClient.repoJsdelivrUrl(fullName, branch, p)
+        res = await githubClient.fetchScriptDirect(jsdelivrUrl, timeout)
+        if (!res.text) {
+          // CDN 失败再走 raw + ghproxy 镜像 + CDN 兜底
+          const rawUrl = githubClient.repoRawUrl(fullName, branch, p)
+          res = await githubClient.fetchScriptWithMirrors(rawUrl, timeout, 8, [jsdelivrUrl])
+        }
+      } else {
+        // 目录树来自 GitHub API / zipball，走 raw + 镜像 + CDN 兜底
+        const rawUrl = githubClient.repoRawUrl(fullName, branch, p)
+        const jsdelivrUrl = githubClient.repoJsdelivrUrl(fullName, branch, p)
+        res = await githubClient.fetchScriptWithMirrors(rawUrl, timeout, 8, [jsdelivrUrl])
+      }
     } catch (err) {
       res = { text: null, url: null, error: err.message || String(err) }
     }
     done++
+
+    // 备用：rawUrl（仅用于记录里展示）
+    const rawUrl = githubClient.repoRawUrl(fullName, branch, p)
 
     let record
     if (!res.text) {
@@ -187,13 +204,21 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         size: 0, sha256: '', body_fp: '',
         status: '抓取失败',
         error: res.error || '抓取失败',
-        // ⭐ 明文判读字段（失败项固定为非明文）
         plain: false,
         plainKind: 'strong',
         plainReason: '抓取失败',
         weakScore: 0,
       }
-      onProgress && onProgress({ type: 'file-progress', repo: fullName, current: done, total: candidates.length, path: p, status: 'fail' })
+      // ⭐ 带 error
+      onProgress && onProgress({
+        type: 'file-progress',
+        repo: fullName,
+        current: done,
+        total: candidates.length,
+        path: p,
+        status: 'fail',
+        error: record.error,
+      })
       records.push(record)
       return record
     }
@@ -205,13 +230,21 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         size: Buffer.byteLength(res.text, 'utf8'), sha256: '', body_fp: '',
         status: '抓取失败',
         error: '返回内容非音源脚本',
-        // ⭐ 明文判读字段（非音源脚本固定为非明文）
         plain: false,
         plainKind: 'strong',
         plainReason: '非音源脚本',
         weakScore: 0,
       }
-      onProgress && onProgress({ type: 'file-progress', repo: fullName, current: done, total: candidates.length, path: p, status: 'skip' })
+      // ⭐ 带 error（保持原来的 status: 'skip' 语义，UI 只在 fail 时打印）
+      onProgress && onProgress({
+        type: 'file-progress',
+        repo: fullName,
+        current: done,
+        total: candidates.length,
+        path: p,
+        status: 'skip',
+        error: record.error,
+      })
       records.push(record)
       return record
     }
@@ -224,18 +257,25 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         size: Buffer.byteLength(res.text, 'utf8'), sha256: '', body_fp: '',
         status: '抓取失败',
         error: '头部缺少 @name',
-        // ⭐ 明文判读字段（缺 @name 固定为非明文）
         plain: false,
         plainKind: 'strong',
         plainReason: '头部缺少 @name',
         weakScore: 0,
       }
-      onProgress && onProgress({ type: 'file-progress', repo: fullName, current: done, total: candidates.length, path: p, status: 'fail' })
+      // ⭐ 带 error
+      onProgress && onProgress({
+        type: 'file-progress',
+        repo: fullName,
+        current: done,
+        total: candidates.length,
+        path: p,
+        status: 'fail',
+        error: record.error,
+      })
       records.push(record)
       return record
     }
 
-    // ⭐ 明文判读（成功扫描）
     const plainInfo = safeDetectPlain(res.text)
 
     record = {
@@ -250,13 +290,19 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
       body_fp: bodyFingerprint(res.text),
       status: '已扫描',
       error: null,
-      // ⭐ 明文判读字段
       plain: plainInfo.plain,
       plainKind: plainInfo.plainKind,
       plainReason: plainInfo.plainReason,
       weakScore: plainInfo.weakScore,
     }
-    onProgress && onProgress({ type: 'file-progress', repo: fullName, current: done, total: candidates.length, path: p, status: 'ok' })
+    onProgress && onProgress({
+      type: 'file-progress',
+      repo: fullName,
+      current: done,
+      total: candidates.length,
+      path: p,
+      status: 'ok',
+    })
     records.push(record)
     return record
   }, { stopFlag })
