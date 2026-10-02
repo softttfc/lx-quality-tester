@@ -1017,3 +1017,12 @@ textarea#shadowSongs:focus {
   font-weight: normal;
   font-family: inherit;
 }
+/* ⭐ 滚动自动展开的配套优化：视口外的表格跳过渲染
+ *   - content-visibility: auto → 视口外的元素跳过布局和绘制
+ *   - contain-intrinsic-size → 预估高度，避免滚动条抖动
+ *   - 只在已渲染的容器上生效，未展开的空容器不受影响
+ */
+.quality-table-container[data-rendered="true"] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 350px;
+}
