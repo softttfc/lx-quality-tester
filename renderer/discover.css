@@ -50,12 +50,18 @@
   min-width: 60px;
   margin-bottom: 0;
 }
-/* ⭐ 按钮激活态（用于「只显示明文」） */
+/* ⭐ 按钮激活态（用于「只显示明文」「隐藏可疑/恶意」） */
 .disc-btn-row button.active {
   background: #e0f0ff;
   color: #007aff;
   border-color: #007aff;
   font-weight: 500;
+}
+/* ⭐ 隐藏恶意按钮激活态用红色 */
+#discBtnHideMalicious.active {
+  background: #ffeaea;
+  color: #ff3b30;
+  border-color: #ff3b30;
 }
 
 /* 仓库列表 */
@@ -146,7 +152,7 @@
 }
 /* 列宽（fixed 布局下必须显式指定）
  * 列顺序：1选中 2来源仓库 3文件名 4音源名称 5版本 6状态
- *         7明文 8收录仓数 9作者 10大小 11已下载 12备注 */
+ *         7明文 8安全 9收录仓数 10作者 11大小 12已下载 13备注 */
 .disc-result-table th:nth-child(1),
 .disc-result-table td:nth-child(1) { width: 46px; text-align: center; }
 .disc-result-table th:nth-child(2),
@@ -161,16 +167,19 @@
 .disc-result-table td:nth-child(6) { width: 70px; }
 .disc-result-table th:nth-child(7),
 .disc-result-table td:nth-child(7) { width: 82px; text-align: center; }
+/* ⭐ 新增：安全列 */
 .disc-result-table th:nth-child(8),
-.disc-result-table td:nth-child(8) { width: 70px; text-align: center; }
+.disc-result-table td:nth-child(8) { width: 82px; text-align: center; }
 .disc-result-table th:nth-child(9),
-.disc-result-table td:nth-child(9) { width: 100px; }
+.disc-result-table td:nth-child(9) { width: 70px; text-align: center; }
 .disc-result-table th:nth-child(10),
-.disc-result-table td:nth-child(10) { width: 70px; }
+.disc-result-table td:nth-child(10) { width: 100px; }
 .disc-result-table th:nth-child(11),
-.disc-result-table td:nth-child(11) { width: 64px; text-align: center; }
+.disc-result-table td:nth-child(11) { width: 70px; }
 .disc-result-table th:nth-child(12),
-.disc-result-table td:nth-child(12) { width: auto; }
+.disc-result-table td:nth-child(12) { width: 64px; text-align: center; }
+.disc-result-table th:nth-child(13),
+.disc-result-table td:nth-child(13) { width: auto; }
 .disc-result-table input.disc-cb {
   width: 14px;
   height: 14px;
@@ -185,6 +194,20 @@
 .disc-plain-warn    { color: #ff9500; font-size: 11px; cursor: help; }
 .disc-plain-fail    { color: #ff3b30; font-size: 11px; cursor: help; }
 .disc-plain-unknown { color: #bbb;    font-size: 11px; }
+
+/* ⭐ 新增：安全列单元格样式 */
+.disc-safe-ok      { color: #34c759; font-size: 11px; }
+.disc-safe-warn    { color: #ff9500; font-size: 11px; cursor: help; }
+.disc-safe-fail    { color: #ff3b30; font-size: 11px; cursor: help; font-weight: 500; }
+.disc-safe-unknown { color: #bbb;    font-size: 11px; }
+
+/* ⭐ 新增：恶意行高亮 */
+.disc-result-table tr.disc-row-malicious {
+  background: #fff8f8;
+}
+.disc-result-table tr.disc-row-malicious:hover {
+  background: #fff0f0;
+}
 
 .disc-status-bar {
   padding: 6px 10px;
