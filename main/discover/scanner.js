@@ -4,6 +4,8 @@ const { asyncPool } = require('./concurrency')
 const githubClient = require('./githubClient')
 const { bodyFingerprint } = require('./fingerprint')
 const { detectPlainSource } = require('../plainDetector')
+// ⭐ 新增：恶意代码检测
+const { detectMalicious } = require('./maliciousDetector')
 
 const EXCLUDE_DIRS = new Set([
   '.github', '.git', '.vscode', '.idea', 'node_modules', 'docs', 'doc',
@@ -123,6 +125,15 @@ function safeDetectPlain(text) {
   }
 }
 
+// ⭐ 新增：安全调用 detectMalicious
+function safeDetectMalicious(text) {
+  try {
+    return detectMalicious(text)
+  } catch (e) {
+    return { malicious: false, severity: 'clean', matches: [] }
+  }
+}
+
 async function scanRepo(repo, options, onProgress, stopFlag) {
   const fullName = repo.full_name
   const branch = repo.branch || 'main'
@@ -160,7 +171,6 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
     return { full_name: fullName, branch, records: [], error: '未发现候选音源脚本' }
   }
 
-  // ⭐ 目录树来自 jsDelivr → 文件内容优先走 jsDelivr CDN
   const preferJsdelivr = treeResult.source === 'jsdelivr'
 
   const records = []
@@ -174,16 +184,13 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
     let res
     try {
       if (preferJsdelivr) {
-        // ⭐ 目录树来自 jsDelivr，直接用 CDN 下文件
         const jsdelivrUrl = githubClient.repoJsdelivrUrl(fullName, branch, p)
         res = await githubClient.fetchScriptDirect(jsdelivrUrl, timeout)
         if (!res.text) {
-          // CDN 失败再走 raw + ghproxy 镜像 + CDN 兜底
           const rawUrl = githubClient.repoRawUrl(fullName, branch, p)
           res = await githubClient.fetchScriptWithMirrors(rawUrl, timeout, 8, [jsdelivrUrl])
         }
       } else {
-        // 目录树来自 GitHub API / zipball，走 raw + 镜像 + CDN 兜底
         const rawUrl = githubClient.repoRawUrl(fullName, branch, p)
         const jsdelivrUrl = githubClient.repoJsdelivrUrl(fullName, branch, p)
         res = await githubClient.fetchScriptWithMirrors(rawUrl, timeout, 8, [jsdelivrUrl])
@@ -193,7 +200,6 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
     }
     done++
 
-    // 备用：rawUrl（仅用于记录里展示）
     const rawUrl = githubClient.repoRawUrl(fullName, branch, p)
 
     let record
@@ -208,8 +214,11 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         plainKind: 'strong',
         plainReason: '抓取失败',
         weakScore: 0,
+        // ⭐ 恶意检测默认字段
+        malicious: false,
+        maliciousSeverity: 'clean',
+        maliciousMatches: [],
       }
-      // ⭐ 带 error
       onProgress && onProgress({
         type: 'file-progress',
         repo: fullName,
@@ -218,6 +227,7 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         path: p,
         status: 'fail',
         error: record.error,
+        malicious: false,
       })
       records.push(record)
       return record
@@ -234,8 +244,10 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         plainKind: 'strong',
         plainReason: '非音源脚本',
         weakScore: 0,
+        malicious: false,
+        maliciousSeverity: 'clean',
+        maliciousMatches: [],
       }
-      // ⭐ 带 error（保持原来的 status: 'skip' 语义，UI 只在 fail 时打印）
       onProgress && onProgress({
         type: 'file-progress',
         repo: fullName,
@@ -244,6 +256,7 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         path: p,
         status: 'skip',
         error: record.error,
+        malicious: false,
       })
       records.push(record)
       return record
@@ -261,8 +274,10 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         plainKind: 'strong',
         plainReason: '头部缺少 @name',
         weakScore: 0,
+        malicious: false,
+        maliciousSeverity: 'clean',
+        maliciousMatches: [],
       }
-      // ⭐ 带 error
       onProgress && onProgress({
         type: 'file-progress',
         repo: fullName,
@@ -271,12 +286,16 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
         path: p,
         status: 'fail',
         error: record.error,
+        malicious: false,
       })
       records.push(record)
       return record
     }
 
+    // ⭐ 明文判读
     const plainInfo = safeDetectPlain(res.text)
+    // ⭐ 恶意检测
+    const malInfo = safeDetectMalicious(res.text)
 
     record = {
       repo: fullName, branch, path: p, raw_url: rawUrl, used_url: res.url || rawUrl,
@@ -294,6 +313,10 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
       plainKind: plainInfo.plainKind,
       plainReason: plainInfo.plainReason,
       weakScore: plainInfo.weakScore,
+      // ⭐ 恶意检测结果
+      malicious: malInfo.malicious,
+      maliciousSeverity: malInfo.severity,
+      maliciousMatches: malInfo.matches,
     }
     onProgress && onProgress({
       type: 'file-progress',
@@ -302,6 +325,9 @@ async function scanRepo(repo, options, onProgress, stopFlag) {
       total: candidates.length,
       path: p,
       status: 'ok',
+      // ⭐ 让 UI 知道这个文件是否恶意
+      malicious: malInfo.malicious,
+      maliciousSeverity: malInfo.severity,
     })
     records.push(record)
     return record
@@ -346,6 +372,12 @@ async function scanRepos(repos, options, onProgress, stopFlag) {
   messages.push(`本次 GitHub API 调用次数：${githubClient.getApiCalls()}`)
   if (stopFlag && stopFlag.cancelled) {
     messages.push('扫描已被用户取消，已保留完成部分')
+  }
+
+  // ⭐ 恶意文件统计
+  const malCount = allRecords.filter((r) => r.malicious).length
+  if (malCount > 0) {
+    messages.push(`⚠️ 检测到 ${malCount} 个疑似恶意/可疑音源，详情见「安全」列`)
   }
 
   return { records: allRecords, messages }
