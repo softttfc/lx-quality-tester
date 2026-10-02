@@ -8,6 +8,7 @@
   let rawResult = null
   let scanning = false
   let plainOnly = false         // ⭐ 只显示明文开关
+  let hideMalicious = false     // ⭐ 隐藏可疑/恶意开关
   const checkedKeys = new Set() // ⭐ 用记录键存储勾选，避免索引错位
   let unsubscribe = null
 
@@ -156,6 +157,7 @@
         <button id="discBtnSelectAll" style="flex:0 0 auto; width:auto">全选</button>
         <button id="discBtnSelectNone" style="flex:0 0 auto; width:auto">全不选</button>
         <button id="discBtnPlainOnly" style="flex:0 0 auto; width:auto">只显示明文</button>
+        <button id="discBtnHideMalicious" style="flex:0 0 auto; width:auto">隐藏可疑/恶意</button>
         <span class="disc-hint" id="discPlainCount" style="margin-left:6px"></span>
       </div>
     </div>
@@ -164,7 +166,7 @@
         <thead>
           <tr>
             <th>选中</th><th>来源仓库</th><th>文件名</th><th>音源名称(@name)</th>
-            <th>版本(@version)</th><th>状态</th><th>明文</th><th>收录仓数</th>
+            <th>版本(@version)</th><th>状态</th><th>明文</th><th>安全</th><th>收录仓数</th>
             <th>作者(@author)</th><th>大小</th><th>已下载</th><th>备注</th>
           </tr>
         </thead>
@@ -223,7 +225,6 @@
       fileWorkers: parseInt($('discFileWorkers').value, 10) || 8,
       limit: parseInt($('discLimit').value, 10) || 40,
       timeout: parseFloat($('discTimeout').value) || 8,
-      // ⭐ 代理配置
       proxyEnabled: $('discProxyEnabled') ? $('discProxyEnabled').checked : false,
       proxyUrl: $('discProxyUrl') ? $('discProxyUrl').value.trim() : '',
     }
@@ -252,14 +253,35 @@
     return `<span class="disc-plain-fail" title="${escapeHtml(reason)}">🔒 非明文</span>`
   }
 
+  // ⭐ 新增：安全单元格
+  function renderSafeCell(r) {
+    if (r.status !== '已扫描') {
+      return '<span class="disc-safe-unknown">—</span>'
+    }
+    if (!r.malicious) {
+      return '<span class="disc-safe-ok">✅ 安全</span>'
+    }
+    const reasons = (r.maliciousMatches || [])
+      .filter((m) => m.severity === 'high' || m.severity === 'medium')
+      .map((m) => `${m.reason} [${m.id}]`)
+      .join('\n')
+    const isHigh = r.maliciousSeverity === 'high'
+    const cls = isHigh ? 'disc-safe-fail' : 'disc-safe-warn'
+    const icon = isHigh ? '⛔' : '⚠️'
+    const text = isHigh ? '恶意' : '可疑'
+    return `<span class="${cls}" title="${escapeHtml(reasons)}">${icon} ${text}</span>`
+  }
+
   // ---------------- 结果表格 ----------------
   function renderRows() {
     const tbody = $('discResultTbody')
     if (!tbody) return
 
     if (currentView.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:#999;padding:20px">${
-        plainOnly ? '没有明文音源' : '没有结果'
+      tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;color:#999;padding:20px">${
+        plainOnly && hideMalicious ? '没有符合条件的结果' :
+        plainOnly ? '没有明文音源' :
+        hideMalicious ? '没有非恶意音源' : '没有结果'
       }</td></tr>`
       return
     }
@@ -269,7 +291,8 @@
       const checkedAttr = checkedKeys.has(key) ? 'checked' : ''
       const downloaded = r.downloaded ? '✅' : ''
       const statusCls = r.status === '已扫描' ? 'disc-status-ok' : 'disc-status-fail'
-      return `<tr data-key="${escapeHtml(key)}">
+      const rowCls = r.malicious ? 'disc-row-malicious' : ''
+      return `<tr data-key="${escapeHtml(key)}" class="${rowCls}">
         <td><input type="checkbox" class="disc-cb" data-key="${escapeHtml(key)}" ${checkedAttr}></td>
         <td>${escapeHtml(r.repo || '')}</td>
         <td>${escapeHtml((r.path || '').split('/').pop() || '')}</td>
@@ -277,6 +300,7 @@
         <td>${escapeHtml(r.version || '-')}</td>
         <td class="${statusCls}">${escapeHtml(r.status || '')}</td>
         <td>${renderPlainCell(r)}</td>
+        <td>${renderSafeCell(r)}</td>
         <td>${r.repo_count || 1}</td>
         <td>${escapeHtml(r.author || '-')}</td>
         <td>${humanSize(r.size)}</td>
@@ -302,21 +326,35 @@
     btn.classList.toggle('active', plainOnly)
   }
 
+  // ⭐ 新增：更新隐藏恶意按钮状态
+  function updateHideMaliciousButton() {
+    const btn = $('discBtnHideMalicious')
+    if (!btn) return
+    btn.textContent = hideMalicious ? '✓ 已隐藏可疑/恶意' : '隐藏可疑/恶意'
+    btn.classList.toggle('active', hideMalicious)
+  }
+
   function updatePlainCount() {
     const el = $('discPlainCount')
     if (!el) return
     if (!allRecords.length) { el.textContent = ''; return }
     const total = allRecords.length
     const plainCount = allRecords.filter((r) => r.plain === true).length
-    el.textContent = `明文 ${plainCount}/${total}`
+    const malCount = allRecords.filter((r) => r.malicious).length
+    let text = `明文 ${plainCount}/${total}`
+    if (malCount > 0) text += `，⚠️ 可疑/恶意 ${malCount}`
+    el.textContent = text
   }
 
   function applyFilterAndRender() {
-    currentView = plainOnly
-      ? allRecords.filter((r) => r.plain === true)
-      : allRecords.slice()
+    currentView = allRecords.filter((r) => {
+      if (plainOnly && r.plain !== true) return false
+      if (hideMalicious && r.malicious) return false
+      return true
+    })
     renderRows()
     updatePlainOnlyButton()
+    updateHideMaliciousButton()
     updatePlainCount()
     updateDownloadButton()
   }
@@ -343,7 +381,6 @@
       limit: parseInt($('discLimit').value, 10) || 40,
       timeout: parseFloat($('discTimeout').value) || 8,
       noDedupe,
-      // ⭐ 代理参数
       proxyEnabled: $('discProxyEnabled').checked,
       proxyUrl: $('discProxyUrl').value.trim(),
     }
@@ -351,7 +388,7 @@
     scanning = true
     $('discBtnScan').disabled = true
     $('discBtnCancel').disabled = false
-    checkedKeys.clear()            // ⭐ 重新扫描时清空勾选
+    checkedKeys.clear()
     setStatus('扫描中...')
     clearLog()
 
@@ -361,8 +398,13 @@
       else if (p.type === 'repo-start') log('info', `>>> 扫描仓库 ${p.repo} (${p.branch})`)
       else if (p.type === 'repo-tree') log('info', `[${p.repo}] 文件树 ${p.totalFiles} 项，候选 ${p.candidates} 个`)
       else if (p.type === 'file-progress') {
-        // ⭐ 带上具体 error
-        if (p.status === 'fail') log('error', `  x ${p.repo}/${p.path}：${p.error || ''}`)
+        if (p.status === 'fail') {
+          log('error', `  x ${p.repo}/${p.path}：${p.error || ''}`)
+        } else if (p.status === 'ok' && p.malicious) {
+          // ⭐ 恶意文件提示
+          const sev = p.maliciousSeverity === 'high' ? '⛔ 恶意' : '⚠️ 可疑'
+          log('warn', `  ${sev} ${p.repo}/${p.path}`)
+        }
       } else if (p.type === 'notice') log('warn', `  · ${p.message}`)
       else if (p.type === 'repo-error') log('error', `  x ${p.repo}: ${p.error}`)
       else if (p.type === 'repo-done') log('info', `[${p.repo}] 完成，共 ${p.count} 条`)
@@ -372,16 +414,24 @@
     try {
       const r = await window.api.discoverScan(params)
       rawResult = r
-      allRecords = r.records || []           // ⭐ 全量记录
-      applyFilterAndRender()                 // ⭐ 按当前 plainOnly 渲染
+      allRecords = r.records || []
+      applyFilterAndRender()
       setStatus(`扫描完成：原始 ${r.found} 条，显示 ${r.shown} 条`)
       for (const m of (r.messages || [])) log('info', m)
 
-      // ⭐ 明文统计日志
       const plainCount = allRecords.filter((x) => x.plain === true).length
       const weakCount = allRecords.filter((x) => x.plainKind === 'weak').length
       const strongCount = allRecords.filter((x) => x.plainKind === 'strong').length
       log('info', `明文判读：明文 ${plainCount} 条，疑似混淆 ${weakCount} 条，强混淆/失败 ${strongCount} 条`)
+
+      // ⭐ 恶意统计
+      const malHigh = allRecords.filter((x) => x.maliciousSeverity === 'high').length
+      const malMedium = allRecords.filter((x) => x.maliciousSeverity === 'medium').length
+      if (malHigh > 0 || malMedium > 0) {
+        log('warn', `⚠️ 安全检测：恶意 ${malHigh} 条，可疑 ${malMedium} 条（可在「安全」列查看详情）`)
+      } else {
+        log('info', '安全检测：未发现可疑/恶意音源')
+      }
     } catch (err) {
       log('error', '扫描失败：' + (err.message || err))
       setStatus('扫描失败：网络不可达，请检查代理或稍后重试')
@@ -408,9 +458,27 @@
     if (!targetDir) { alert('请先设置下载目录'); return }
 
     const forceFailed = $('discForceFailed').checked
-    // ⭐ 从全量记录里按 key 取，确保"被过滤但仍勾选"的记录也进入下载
     const selected = allRecords.filter((r) => checkedKeys.has(recordKey(r)))
     if (!selected.length) return
+
+    // ⭐ 恶意文件二次确认
+    const maliciousSelected = selected.filter((r) => r.malicious)
+    if (maliciousSelected.length > 0) {
+      const list = maliciousSelected.slice(0, 8).map((r) => {
+        const reasonText = (r.maliciousMatches || [])
+          .filter((m) => m.severity === 'high' || m.severity === 'medium')
+          .map((m) => m.reason)
+          .join('；')
+        return `  · ${r.name || r.path} —— ${reasonText}`
+      }).join('\n')
+      const more = maliciousSelected.length > 8 ? `\n  ...及其他 ${maliciousSelected.length - 8} 个` : ''
+      const ok = confirm(
+        `⚠️ 检测到 ${maliciousSelected.length} 个疑似恶意/可疑音源：\n\n${list}${more}\n\n` +
+        `这些文件可能包含 OOM 攻击、防改名自毁或其他恶意代码。\n` +
+        `建议取消后勾选其他版本，或仅在隔离环境测试。\n\n仍要下载？`
+      )
+      if (!ok) return
+    }
 
     if (!confirm(`即将下载 ${selected.length} 个音源到：\n${targetDir}\n\n继续？`)) return
 
@@ -442,7 +510,7 @@
           rec.downloaded_file = okFiles.get(rec.name) || ''
         }
       }
-      renderRows()   // ⭐ 只重绘当前视图
+      renderRows()
     } catch (err) {
       log('error', '下载异常：' + (err.message || err))
     } finally {
@@ -461,7 +529,7 @@
       found: rawResult.found,
       shown: rawResult.shown,
       apiCalls: rawResult.apiCalls,
-      filtered: plainOnly,                       // ⭐ 记录当前是否处于"只显示明文"过滤
+      filtered: { plainOnly, hideMalicious },
       records: currentView.map((r) => ({ ...r })),
     }
     try {
@@ -584,7 +652,6 @@
 
     container.innerHTML = PANEL_HTML
 
-    // 把编辑弹窗挂到 body，避免被侧栏或容器裁剪
     if (!$('discEditModal')) {
       const holder = document.createElement('div')
       holder.innerHTML = MODAL_HTML
@@ -599,7 +666,6 @@
       $('discFileWorkers').value = cfg.fileWorkers || 8
       $('discLimit').value = cfg.limit || 40
       $('discTimeout').value = cfg.timeout || 8
-      // ⭐ 代理配置填充
       $('discProxyEnabled').checked = cfg.proxyEnabled === true
       $('discProxyUrl').value = cfg.proxyUrl || ''
       $('discProxyUrl').disabled = !$('discProxyEnabled').checked
@@ -629,7 +695,6 @@
       }
     })
 
-    // ⭐ 全选/全不选：只作用于当前可见的 currentView
     $('discBtnSelectAll').addEventListener('click', () => {
       currentView.forEach((r) => checkedKeys.add(recordKey(r)))
       renderRows()
@@ -641,9 +706,14 @@
       updateDownloadButton()
     })
 
-    // ⭐ 只显示明文：切换过滤条件，保留已勾选项
     $('discBtnPlainOnly').addEventListener('click', () => {
       plainOnly = !plainOnly
+      applyFilterAndRender()
+    })
+
+    // ⭐ 隐藏可疑/恶意按钮
+    $('discBtnHideMalicious').addEventListener('click', () => {
+      hideMalicious = !hideMalicious
       applyFilterAndRender()
     })
 
@@ -657,7 +727,6 @@
       } catch (_) {}
     })
 
-    // ⭐ 代理开关联动
     $('discProxyEnabled').addEventListener('change', () => {
       $('discProxyUrl').disabled = !$('discProxyEnabled').checked
       persistConfig()
@@ -669,10 +738,12 @@
     }
 
     updatePlainOnlyButton()
+    updateHideMaliciousButton()
     updatePlainCount()
     setStatus('就绪。添加候选仓库后点击“扫描仓库”。')
     log('info', '检索标签页已就绪。状态列只会出现「已扫描 / 抓取失败」。')
     log('info', '明文列为静态正则判读结果，仅供参考，不代表安全性。')
+    log('info', '安全列为静态恶意代码检测，仅供参考；标红文件建议排除。')
     log('info', '若需访问 GitHub，可在「网络代理」中勾选并填写 http://127.0.0.1:7897（只作用于本标签页）。')
   }
 
