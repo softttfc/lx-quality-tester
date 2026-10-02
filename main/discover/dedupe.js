@@ -22,10 +22,15 @@ function compareVersions(a, b) {
   return 0
 }
 
+// ⭐ 修改：优先选非恶意的版本
 function pickBest(items) {
-  let best = items[0]
-  for (let i = 1; i < items.length; i++) {
-    const item = items[i]
+  // 优先从非恶意的里挑
+  const safe = items.filter((x) => !x.malicious)
+  const pool = safe.length > 0 ? safe : items
+
+  let best = pool[0]
+  for (let i = 1; i < pool.length; i++) {
+    const item = pool[i]
     const cmp = compareVersions(item.version, best.version)
     if (cmp > 0) best = item
     else if (cmp === 0 && (item.size || 0) > (best.size || 0)) best = item
@@ -72,7 +77,13 @@ function mergeEntry(items) {
   entry.repo_count = entry.merged_repos.length
   entry.other_versions = otherVersions(entry, others)
   entry.merged_items = items.length
+  // ⭐ 备注里追加是否有恶意版本
+  const maliciousCount = items.filter((x) => x.malicious).length
+  entry.malicious_versions = maliciousCount
   entry.note = buildNote(entry)
+  if (maliciousCount > 0 && !entry.malicious) {
+    entry.note = (entry.note ? entry.note + '；' : '') + `${maliciousCount} 个恶意版本已忽略`
+  }
   return entry
 }
 
@@ -155,7 +166,12 @@ function annotateRecords(records) {
 function dedupeSummary(original, merged) {
   const dupItems = merged.reduce((s, r) => s + (r.duplicate_count || 0), 0)
   const dupRows = merged.filter((r) => r.duplicate_count > 0).length
-  return `去重后 ${merged.length} 条（原始 ${original.length} 条）：合并重复音源 ${dupItems} 项、涉及 ${dupRows} 条结果。`
+  const malCount = merged.filter((r) => r.malicious).length
+  let summary = `去重后 ${merged.length} 条（原始 ${original.length} 条）：合并重复音源 ${dupItems} 项、涉及 ${dupRows} 条结果。`
+  if (malCount > 0) {
+    summary += ` ⚠️ 其中 ${malCount} 条被标记为可疑/恶意。`
+  }
+  return summary
 }
 
 module.exports = { dedupeRecords, annotateRecords, dedupeSummary, compareVersions }
