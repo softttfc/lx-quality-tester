@@ -23,6 +23,10 @@ const FILE_CONCURRENCY = 3
 // ⭐ A 方案：results 容器事件委托是否已绑定（只绑一次）
 let resultEventsBound = false
 
+// ⭐ 滚动自动展开
+let autoExpandObserver = null
+let autoExpandOnScroll = false
+
 /* ═════════ 目录选择 ═════════ */
 $('btnSelectDir').addEventListener('click', async () => {
   const dir = await window.api.selectSourcesDir()
@@ -1495,6 +1499,87 @@ function handleToggleTable(toggle) {
   toggle.textContent = '收起'
 }
 
+/* ⭐ 滚动自动展开：初始化 IntersectionObserver
+ *   - 观察所有 .api-card（非 standalone）
+ *   - 卡片进入视口 200px 范围时，自动展开其 body 和所有平台表格
+ *   - 一次性：展开后 unobserve，避免用户手动收起后又自动展开
+ */
+function initAutoExpandObserver() {
+  // 清理旧的
+  if (autoExpandObserver) {
+    autoExpandObserver.disconnect()
+    autoExpandObserver = null
+  }
+
+  // 开关关闭时不启用
+  if (!autoExpandOnScroll) return
+
+  const resultsEl = $('results')
+  if (!resultsEl) return
+
+  // 浏览器不支持时跳过
+  if (typeof IntersectionObserver === 'undefined') {
+    console.warn('[auto-expand] IntersectionObserver 不可用')
+    return
+  }
+
+  autoExpandObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      const card = entry.target
+      try {
+        expandCardContent(card)
+      } catch (err) {
+        console.error('[auto-expand] 展开失败:', err)
+      }
+      // ⭐ 一次性：展开后停止观察该卡片
+      autoExpandObserver.unobserve(card)
+    }
+  }, {
+    // 视口根部 + 200px 预加载区（用户还没滚到就已经展开）
+    root: null,
+    rootMargin: '200px 0px',
+    threshold: 0,
+  })
+
+  // 观察所有 API 卡片（排除后端清单/影子评分这种独立卡片）
+  resultsEl.querySelectorAll(
+    '.api-card:not(.standalone-backend-card):not(.standalone-shadow-card)'
+  ).forEach((card) => {
+    autoExpandObserver.observe(card)
+  })
+}
+
+/* ⭐ 展开单个卡片的全部内容
+ *   - 展开被收起的 body
+ *   - 展开所有未渲染的表格
+ */
+function expandCardContent(card) {
+  if (!card) return
+
+  // 1. 展开 body（如果被收起了）
+  const body = card.querySelector('.api-body')
+  const icon = card.querySelector('.api-header .icon')
+  if (body && body.style.display === 'none') {
+    body.style.display = 'block'
+    if (icon) icon.textContent = '▼'
+  }
+
+  // 2. 展开每个平台的表格（仅未渲染的）
+  card.querySelectorAll('.platform').forEach((platform) => {
+    const toggle = platform.querySelector('.toggle-table')
+    const container = platform.querySelector('.quality-table-container')
+    if (!toggle || !container) return
+    if (container.dataset.rendered === 'true') return   // 已渲染，跳过
+
+    try {
+      handleToggleTable(toggle)
+    } catch (err) {
+      console.error('[auto-expand] 平台展开失败:', err)
+    }
+  })
+}
+
 function renderResult(report) {
   const { summary, results } = report
   $('summary').style.display = 'grid'
@@ -1522,6 +1607,9 @@ function renderResult(report) {
   if (hostScores) {
     injectShadowPanels(hostScores)
   }
+
+  // ⭐ 滚动自动展开：初始化观察器
+  initAutoExpandObserver()
 }
 
 function renderPlainBadge(info) {
@@ -1732,6 +1820,29 @@ function escapeHtml(s) {
   } else {
     if (none) none.checked = true
   }
+})()
+
+/* ⭐ 滚动自动展开开关 */
+;(function initAutoExpandToggle() {
+  const cb = $('autoExpandOnScroll')
+  if (!cb) return
+
+  cb.addEventListener('change', () => {
+    autoExpandOnScroll = cb.checked
+
+    if (autoExpandOnScroll) {
+      // 开启：如果已有结果，立即初始化（展开视口内的卡片）
+      if (lastReport) {
+        initAutoExpandObserver()
+      }
+    } else {
+      // 关闭：停止观察
+      if (autoExpandObserver) {
+        autoExpandObserver.disconnect()
+        autoExpandObserver = null
+      }
+    }
+  })
 })()
 
 /* ═════════ 初始化：更新策略状态提示 ═════════ */
