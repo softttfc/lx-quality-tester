@@ -17,8 +17,8 @@ let heavyTestLock = null   // 'backend' | 'shadow' | null —— 两个测试互
 // ⭐ v1.3.0：共享后端提示防抖
 let sharedHintTimer = null
 
-// ⭐ v2.3：文件级并发度（1–8，默认 3）
-const FILE_CONCURRENCY = 3
+// ⭐ v2.6：并发度不再全局硬编码，改由界面「并发设置」区读取
+//   详见 getConcurrency() 函数
 
 // ⭐ A 方案：results 容器事件委托是否已绑定（只绑一次）
 let resultEventsBound = false
@@ -26,6 +26,16 @@ let resultEventsBound = false
 // ⭐ 滚动自动展开
 let autoExpandObserver = null
 let autoExpandOnScroll = false
+
+/* ═════════ 并发度读取 ═════════ */
+// ⭐ v2.6：从界面读取并发数，失败时回退到 fallback
+//   上限 8：与 main/index.js、hostScorer.js、tester.js 中的 Math.min(..., 8) 一致
+function getConcurrency(key, fallback) {
+  const el = $(key)
+  const n = parseInt(el?.value, 10)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(1, Math.min(n, 8))
+}
 
 /* ═════════ 目录选择 ═════════ */
 $('btnSelectDir').addEventListener('click', async () => {
@@ -112,7 +122,7 @@ $('btnStart').addEventListener('click', async () => {
     delay: parseInt($('delay').value, 10) || 200,
     enableFfmpegCheck: true,
     ffmpegTimeout: 15000,
-    concurrency: FILE_CONCURRENCY,   // ⭐ v2.3：文件级并发度
+    concurrency: getConcurrency('concurrencyQuality', 3),   // ⭐ v2.6：从界面读取
   }
 
   setRunning(true)
@@ -348,7 +358,7 @@ $('btnTestBackends').addEventListener('click', async () => {
       options: {
         platforms: ['kw', 'kg', 'tx', 'wy', 'mg'],
         timeout: 15000,
-        concurrency: FILE_CONCURRENCY,   // ⭐ v2.3：文件级并发度
+        concurrency: getConcurrency('concurrencyBackend', 3),   // ⭐ v2.6：从界面读取
       },
     })
     if (!r.ok) {
@@ -759,7 +769,7 @@ $('btnRunShadowTest').addEventListener('click', async () => {
         timeout: 15000,
         fullCoverage,
         maxRounds: 10,
-        concurrency: FILE_CONCURRENCY,   // ⭐ v2.3：单轮内组合级并发度
+        concurrency: getConcurrency('concurrencyShadow', 5),   // ⭐ v2.6：从界面读取
       },
     })
 
