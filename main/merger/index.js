@@ -1,10 +1,16 @@
 const fs = require('fs')
-const { extractSources } = require('./extractor')
+const { extractSources, stripDecorativeInitRequests } = require('./extractor')
 const { generateMergedCode } = require('./generator')
 const { pruneScript } = require('./pruner')
 
 // ⭐ v2.5：主进程堆内存熔断阈值（超过则中止分析，返回已分析结果）
 const MAX_HEAP_MB = 800
+
+// ⭐ 新增：改造后代码缓存
+//   用途：测试阶段（analyzeSources）算好的 cleanedCode → 合并阶段（mergeSources）复用
+//   好处：合并时无需重跑 Layer 1，直接使用与测试阶段严格一致的改造结果
+//   key = 音源文件绝对路径，value = Layer 1 清理后的源码
+const transformedCodeCache = new Map()
 
 function emptyRisk() {
   return { level: 'clean', score: 0, reasons: [], hasExploit: false, categories: {} }
@@ -55,6 +61,14 @@ async function analyzeSources(files) {
 
     const r = await extractSources(file.path)
 
+    // ⭐ 新增：把测试阶段算好的改造后代码存入缓存
+    //   无论 hasInitRequests 是 true/false 都缓存：
+    //     - false（可改造）：合并时直接用它 → 无更新检查调用
+    //     - true（不可改造）：会被 app.js 排除，缓存无害
+    if (r.cleanedCode) {
+      transformedCodeCache.set(file.path, r.cleanedCode)
+    }
+
     results.push({
       name: file.name,
       path: file.path,
@@ -80,6 +94,10 @@ async function analyzeSources(files) {
  *   - shadowKeep / shadowDrop 兼容数组（旧）和对象（新）
  *
  * v2.5：content 从 file.path 重新读取（analyzeSources 不再返回 content）
+ * v2.6：合并时优先复用 analyzeSources 缓存的改造后代码（cleanedCode），
+ *       让"可改造"的源（小熊猫 / Free listen / ikun 等）以改造后代码进入合并，
+ *       避免其初始化更新检查被保留而在 LX Music 运行时触发未捕获 rejection。
+ *       兜底只对 cleanReport.changed === true 的文件重做 Layer 1。
  *
  * @param {Array} files
  * @param {Object} selection
@@ -105,12 +123,31 @@ function mergeSources(files, selection, report, options = {}) {
 
   const prunedFiles = files.map((file, idx) => {
     // ⭐ v2.5：content 优先用已有的；没有就从 path 重新读
+    // ⭐ v2.6：合并阶段优先复用测试阶段缓存好的改造后代码
     let content = file.content
+
     if (!content && file.path) {
-      try {
-        content = fs.readFileSync(file.path, 'utf8')
-      } catch (_) {
-        content = ''
+      // ① 优先从缓存读"测试阶段算好的改造后代码"
+      content = transformedCodeCache.get(file.path)
+
+      // ② 兜底：缓存 miss 时
+      //    只对"需要改造"的文件重做 Layer 1，纯净源直接用原始代码
+      if (!content) {
+        try {
+          content = fs.readFileSync(file.path, 'utf8')
+
+          // ⭐ 判断依据：测试阶段 cleanReport.changed
+          //    - true：Layer 1 曾删过东西（小熊猫 / Free listen / ikun / 星海）→ 需重做
+          //    - false：Layer 1 未做修改（纯净源）→ 直接用原始代码
+          if (file.cleanReport && file.cleanReport.changed === true) {
+            const cleaned = stripDecorativeInitRequests(content)
+            if (cleaned.report.changed && !cleaned.report.error) {
+              content = cleaned.code
+            }
+          }
+        } catch (_) {
+          content = ''
+        }
       }
     }
 
