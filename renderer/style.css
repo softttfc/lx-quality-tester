@@ -1026,3 +1026,26 @@ textarea#shadowSongs:focus {
   content-visibility: auto;
   contain-intrinsic-size: auto 350px;
 }
+
+/* ⭐ v2.6：并发设置区样式 */
+.concurrency-label {
+  flex: 0 0 60px;
+  font-size: 12px;
+  color: #666;
+  white-space: nowrap;
+}
+
+.concurrency-input {
+  flex: 0 0 70px;
+  width: 70px;
+  margin-bottom: 0;
+  text-align: center;
+}
+
+.hint-inline {
+  font-size: 11px;
+  color: #999;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  margin-left: 4px;
+}
